@@ -9,9 +9,11 @@ import {exportCodex,applyCodex} from './codex.js';
 import {publishVault,restoreVault} from './vault.js';
 import {VERSION} from './schema.js';
 import {selectDirectory} from './folder-picker.js';
+import {ChatSync} from './chat-sync.js';
+import {configureChatReader,openChatReader} from './chat-reader-config.js';
 
 const {values:options,positionals} = parseArgs({allowPositionals:true,options:{
-  local:{type:'string'},root:{type:'string'},manual:{type:'boolean'},input:{type:'string'},file:{type:'string'},folder:{type:'string'},kind:{type:'string'},name:{type:'string'},description:{type:'string'},source:{type:'string'},project:{type:'string'},record:{type:'string'},revision:{type:'string'},review:{type:'string'},choice:{type:'string'},destination:{type:'string'},home:{type:'string'},'include-secrets':{type:'boolean'},'password-env':{type:'string'},confirm:{type:'boolean'}
+  local:{type:'string'},root:{type:'string'},manual:{type:'boolean'},input:{type:'string'},file:{type:'string'},folder:{type:'string'},kind:{type:'string'},name:{type:'string'},description:{type:'string'},source:{type:'string'},project:{type:'string'},record:{type:'string'},revision:{type:'string'},review:{type:'string'},choice:{type:'string'},destination:{type:'string'},home:{type:'string'},codex:{type:'string'},'expected-revision':{type:'string'},'include-secrets':{type:'boolean'},'password-env':{type:'string'},confirm:{type:'boolean'}
 }});
 const store = new Store(options.local || process.env.AI_WORKSPACE_LOCAL || defaultLocal());
 function required(key){if(!options[key])throw new Error('Missing --'+key);return options[key];}
@@ -28,7 +30,10 @@ function help(){return {name:'Agent Workspace',version:VERSION,local_state:store
   'startup                                       Validate locally received revisions',
   'project --name TEXT [--source LOCAL_PATH]      Register without uploading sources',
   'get --record ID [--revision ID]                Read accepted state or an explicit candidate',
-  'save-task --input LOCAL_JSON [--record ID]     Save task state and the stage plan',
+  'save-task --input LOCAL_JSON [--record ID --expected-revision REV] Save task with its verified base',
+  'configure-chat-reader --codex EXE [--home DIR] Configure installed Codex history reader locally',
+  'scan-chats [--input OPTIONS_JSON]             Scan all local chats and skip unchanged ones',
+  'save-chat --input LOCAL_JSON                  Save agent summary using a frozen scan token',
   'review --record ID                            Compare revisions and recommend a choice',
   'choose --review ID --choice keep_local --confirm',
   'choose --review ID --choice take_revision --revision ID --confirm',
@@ -74,7 +79,10 @@ async function run(){
     case 'startup':return store.startup();
     case 'project':return store.createProject(required('name'),options.description||'',options.source);
     case 'get':return store.get(required('record'),options.revision);
-    case 'save-task':return store.commit({record_id:options.record,kind:'task',data:await readJson(required('input'))});
+    case 'save-task':return store.commit({record_id:options.record,kind:'task',data:await readJson(required('input')),expected_revision:options['expected-revision']});
+    case 'configure-chat-reader':return configureChatReader(store,{executable:required('codex'),codexHome:options.home});
+    case 'scan-chats':{const reader=await openChatReader(store);try{return await new ChatSync(store,reader.source).scan(options.input?await readJson(options.input):{});}finally{await reader.close();}}
+    case 'save-chat':return new ChatSync(store).save(await readJson(required('input')));
     case 'review':return store.review(required('record'));
     case 'choose':return store.choose({review_id:required('review'),choice:required('choice'),revision_id:options.revision,merged_data:options.input?await readJson(options.input):undefined,user_confirmed:options.confirm===true});
     case 'result':return store.publishResult(required('file'),required('project'),options.description||'');

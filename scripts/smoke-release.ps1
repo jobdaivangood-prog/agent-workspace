@@ -39,6 +39,8 @@ $taskData = @{
 }
 [IO.File]::WriteAllText($taskInput, ($taskData | ConvertTo-Json -Depth 10), $taskEncoding)
 $taskSaved = Invoke-Workspace -Arguments @('save-task', '--input', $taskInput)
+$taskRepeated = Invoke-Workspace -Arguments @('save-task', '--input', $taskInput, '--record', $taskSaved.record_id, '--expected-revision', $taskSaved.revision_id)
+if ($taskRepeated.status -ne 'unchanged' -or $taskRepeated.revision_id -ne $taskSaved.revision_id) { throw 'Unchanged CLI handoff created a revision' }
 $taskStartup = Invoke-Workspace -Arguments @('startup')
 if ($taskStartup.status -ne 'ready') { throw 'First replica is not ready' }
 $taskRestore = Join-Path $taskRun 'restored'
@@ -94,13 +96,13 @@ $taskInitialization = $taskMessages | Where-Object { $_.id -eq 1 }
 $taskTools = $taskMessages | Where-Object { $_.id -eq 2 }
 $taskGet = $taskMessages | Where-Object { $_.id -eq 3 }
 if ($taskInitialization.result.serverInfo.version -ne $taskVersion) { throw 'Stdio initialization failed' }
-if ($taskTools.result.tools.Count -ne 10) { throw 'Unexpected MCP tool count' }
+if ($taskTools.result.tools.Count -ne 12) { throw 'Unexpected MCP tool count' }
 if ($taskGet.error -or $taskGet.result.isError -or !$taskGet.result.content) { throw 'Stdio handoff read failed' }
 $taskHandoff = $taskGet.result.content[0].text | ConvertFrom-Json
 if ($taskHandoff.state.data.goal -ne $taskData.goal -or $taskHandoff.state.data.current_stage -ne 'integration') { throw 'Handoff contents differ' }
 $taskReport = @{
     version=$taskVersion; verified_at=[DateTime]::UtcNow.ToString('o'); observations=$taskRun
-    checks=@{standalone_cli=$true;finished_result_hash=$true;second_replica=$true;provider_folder_change=$true;stdio_initialize=$true;mcp_tools=10;stdio_handoff=$true}
+    checks=@{standalone_cli=$true;unchanged_handoff_skipped=$true;finished_result_hash=$true;second_replica=$true;provider_folder_change=$true;stdio_initialize=$true;mcp_tools=12;stdio_handoff=$true}
     real_synology_drive_test=$false;real_user_codex_settings_changed=$false
 }
 $taskReportPath = Join-Path (Split-Path -Parent $taskRelease) ("agent-workspace-$taskVersion-execution-validation.json")

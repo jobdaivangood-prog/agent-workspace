@@ -15,6 +15,47 @@ async function pair(){const s=await setup();const project=await s.a.createProjec
 test('new device can read a complete accepted handoff and bootstrap',async()=>{
   const {a,b,first,shared}=await pair();assert.equal((await a.startup()).status,'ready');assert.equal((await b.get(first.record_id)).state.data.goal,'Продолжение по проверенной записи');assert.match(await fs.readFile(path.join(shared,'START_HERE.md'),'utf8'),/workspace_review/);
 });
+
+test('verified object digests are reused only for the same file within one operation',async()=>{
+  const {a,base}=await setup();const source=path.join(base,'ready.txt');
+  await fs.writeFile(source,'original');const object=await a.putFile(source);const ctx=await a.context();
+  await a.verifyArtifacts(ctx,[object,object]);assert.equal(ctx.verifiedObjects.size,1);
+  const fresh=await a.context();assert.equal(fresh.verifiedObjects.size,0);
+  const stored=a.objectPath(ctx.root,object.sha256);await fs.writeFile(stored,'modified');
+  const changed=new Date(Date.now()+10000);await fs.utimes(stored,changed,changed);
+  await assert.rejects(a.verifyArtifacts(ctx,[object]),e=>e.code==='CORRUPT_OBJECT');
+});
+test('unchanged normalized task does not publish or rewrite a revision',async()=>{
+  const {a,shared}=await setup();const project=await a.createProject('P');const data=task(project.record_id);
+  const first=await a.commit({kind:'task',data});const recordDir=path.join(shared,'records',first.record_id);
+  const ctx=await a.context(),selectionFile=path.join(ctx.localDir,'selected.json');const selectionBefore=await fs.stat(selectionFile);
+  await a.startup();assert.equal((await fs.stat(selectionFile)).mtimeMs,selectionBefore.mtimeMs,'An unchanged startup must not rewrite the selection map');
+  const revisionDir=path.join(recordDir,first.revision_id);const files=['state.json','summary.md','manifest.json'];
+  const before=await Promise.all(files.map(async name=>({name,bytes:await fs.readFile(path.join(revisionDir,name)),stat:await fs.stat(path.join(revisionDir,name))})));
+  // Omitted defaults and JSON property order do not change the normalized handoff.
+  const normalized=(await a.get(first.record_id)).state.data;
+  const reordered=Object.fromEntries(Object.entries(normalized).reverse());
+  const second=await a.commit({record_id:first.record_id,kind:'task',data:reordered,expected_revision:first.revision_id});
+  assert.deepEqual(second,{record_id:first.record_id,revision_id:first.revision_id,kind:'task',status:'unchanged'});
+  assert.deepEqual(await fs.readdir(recordDir),[first.revision_id]);
+  for(const previous of before){assert.deepEqual(await fs.readFile(path.join(revisionDir,previous.name)),previous.bytes);assert.equal((await fs.stat(path.join(revisionDir,previous.name))).mtimeMs,previous.stat.mtimeMs);}
+});
+test('a changed task creates a revision and stale identical data is rejected',async()=>{
+  const {a,shared}=await setup();const project=await a.createProject('P');const first=await a.commit({kind:'task',data:task(project.record_id)});
+  const changed=task(project.record_id,{completed:['Проверенный этап']});
+  const next=await a.commit({record_id:first.record_id,kind:'task',data:changed,expected_revision:first.revision_id});
+  assert.notEqual(next.revision_id,first.revision_id);assert.equal((await a.get(first.record_id)).state.parents[0],first.revision_id);
+  await assert.rejects(a.commit({record_id:first.record_id,kind:'task',data:changed,expected_revision:first.revision_id}),e=>e.code==='STALE_BASE');
+  assert.equal((await fs.readdir(path.join(shared,'records',first.record_id))).length,2);
+});
+test('unchanged task data still publishes a changed verified artifact set',async()=>{
+  const {a,base}=await setup();const project=await a.createProject('P');const data=task(project.record_id);
+  const first=await a.commit({kind:'task',data});const file=path.join(base,'explicit-result.txt');await fs.writeFile(file,'Synthetic artifact observation');
+  const artifact=await a.putFile(file);const next=await a.commit({record_id:first.record_id,kind:'task',data,artifacts:[artifact],expected_revision:first.revision_id});
+  assert.notEqual(next.revision_id,first.revision_id);assert.equal((await a.get(first.record_id)).state.artifacts[0].sha256,artifact.sha256);
+  const repeated=await a.commit({record_id:first.record_id,kind:'task',data,artifacts:[{name:artifact.name,size:artifact.size,sha256:artifact.sha256}],expected_revision:next.revision_id});
+  assert.equal(repeated.status,'unchanged');assert.equal(repeated.revision_id,next.revision_id);
+});
 test('every incoming change to an accepted record needs explicit choice',async()=>{
   const {a,b,shared,sharedB,project,first}=await pair();const next=await a.commit({record_id:first.record_id,kind:'task',data:task(project.record_id,{completed:['Этап A']})});await fs.cp(shared,sharedB,{recursive:true,force:true});
   assert.equal((await b.startup()).status,'choice_required');assert.equal((await b.get(first.record_id)).state.revision_id,first.revision_id);

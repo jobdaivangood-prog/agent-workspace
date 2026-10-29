@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Client, InMemoryTransport} from '@modelcontextprotocol/client';
 import {createServer} from '../src/server.js';
-import {Store} from '../src/store.js';
+import {Store,hash} from '../src/store.js';
 
 // Run this single file directly when an in-process check is required:
 //   node test/protocol.test.js
@@ -19,7 +19,9 @@ test('MCP initialization, discovery and project access use a linked memory pair'
   t.diagnostic('Preserved test data: ' + run);
 
   const store = new Store(path.join(run, 'local'));
-  const server = createServer(store);
+  const snapshot={session_id:'protocol-chat',title:'Synthetic chat',archived:false,active:false,latest_turn_id:'turn-1',last_item_id:'item-1',fingerprint:hash('protocol-source'),public_messages:[{role:'user',text:'Preserve this synthetic goal',turn_id:'turn-1',item_id:'item-1'}],coverage:{complete_increment:true},change_type:'changed',checkpoint:{version:1,thread_id:'protocol-chat',last_turn_id:'turn-1'}};
+  const source={enumerate:async()=>({threads:[{id:'protocol-chat',title:'Synthetic chat',archived:false}],complete:true,scope:'Synthetic protocol source'}),inspect:async(_session,checkpoint)=>({unchanged:!!checkpoint,snapshot})};
+  const server = createServer(store,{chatSourceFactory:async()=>({source,close:async()=>{}})});
   const client = new Client({name: 'agent-workspace-protocol-check', version: '1.0.0'});
   // Both halves come from one SDK package; do not mix the server's and client's
   // separately bundled InMemoryTransport classes.
@@ -34,7 +36,7 @@ test('MCP initialization, discovery and project access use a linked memory pair'
   assert.equal(client.getServerVersion()?.name, 'agent-workspace');
   const discovered = await client.listTools();
   const names = new Set(discovered.tools.map(tool => tool.name));
-  for (const expected of ['workspace_startup', 'workspace_connect', 'workspace_create_project', 'workspace_get']) {
+  for (const expected of ['workspace_startup', 'workspace_connect', 'workspace_create_project', 'workspace_get','workspace_scan_chats','workspace_save_chat']) {
     assert.ok(names.has(expected), 'Missing MCP tool: ' + expected);
   }
 
@@ -69,4 +71,11 @@ test('MCP initialization, discovery and project access use a linked memory pair'
 
   const marker = JSON.parse(await fs.readFile(path.join(shared, 'workspace.json'), 'utf8'));
   assert.equal(marker.workspace_id, startup.workspace_id);
+  const scan=await invoke('workspace_scan_chats');
+  assert.equal(scan.counts.needs_summary,1);
+  const chat=await invoke('workspace_save_chat',{scan_id:scan.scan_id,session_id:'protocol-chat',task:{project_id:created.record_id,title:'Synthetic chat',goal:'Preserve this synthetic goal',task_status:'in_progress',source_session:{provider:'codex',session_id:'protocol-chat'}}});
+  assert.equal(chat.status,'saved');
+  const repeated=await invoke('workspace_scan_chats');
+  assert.equal(repeated.counts.unchanged,1);
+  assert.equal(repeated.scan_id,null);
 });

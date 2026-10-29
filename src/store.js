@@ -10,6 +10,9 @@ import { VERSION, SCHEMA_VERSION, id, validatePayload, kindSchema } from './sche
 
 export const hash = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 const json = value => JSON.stringify(value, null, 2) + '\n';
+const canonicalJson = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+  ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+const canonicalArtifacts = artifacts => artifacts.map(canonicalJson).sort();
 const fail = (code, message) => Object.assign(new Error(message), {code});
 export const defaultLocal = () => path.join(process.env.LOCALAPPDATA || process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'AgentWorkspace');
 const exists = async p => !!(await fs.lstat(p).catch(e => { if (e.code === 'ENOENT') return null; throw e; }));
@@ -192,7 +195,7 @@ export class Store {
     const selected = await readJson(path.join(localDir, 'selected.json')).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
     if (!selected || typeof selected !== 'object' || Array.isArray(selected)) throw fail('INVALID_SELECTION', 'Expected a revision selection map');
     for (const [recordId, revisionId] of Object.entries(selected)) {id.parse(recordId); id.parse(revisionId);}
-    return {...config, root, localDir, selected, verifiedObjects:new Set()};
+    return {...config, root, localDir, selected, verifiedObjects:new Map()};
   }
   objectPath(root, digest) {
     if (!/^[0-9a-f]{64}$/.test(digest)) throw fail('INVALID_HASH', 'Invalid object hash');
@@ -229,8 +232,11 @@ export class Store {
       if (!a || typeof a.name !== 'string' || !Number.isSafeInteger(a.size) || a.size < 0) throw fail('INVALID_ARTIFACTS', 'Invalid artifact metadata');
       const object = this.objectPath(ctx.root, a.sha256);
       const {stat} = await safePath(object, {root: ctx.root, type: 'file'});
-      if (stat.size !== a.size || await fileHash(object) !== a.sha256) throw fail('CORRUPT_OBJECT', 'Result object unavailable or changed');
-      ctx.verifiedObjects?.add(a.sha256);
+      const signature=JSON.stringify([stat.dev,stat.ino,stat.mode,stat.size,stat.mtimeMs,stat.ctimeMs]);
+      // Reuse a successful digest only inside this operation. Every reference
+      // still checks its path/type/size and file identity; no cross-run cache.
+      if (stat.size !== a.size || (ctx.verifiedObjects?.get(a.sha256)!==signature && await fileHash(object)!==a.sha256)) throw fail('CORRUPT_OBJECT', 'Result object unavailable or changed');
+      ctx.verifiedObjects?.set(a.sha256,signature);
     }
   }
   checkPackageArtifacts(kind, data, artifacts) {
@@ -303,7 +309,7 @@ export class Store {
     await atomicJson(path.join(ctx.localDir, 'cache', bundle.state.record_id + '-' + bundle.state.revision_id + '.json'), bundle);
   }
   async saveSelection(ctx) { await atomicJson(path.join(ctx.localDir, 'selected.json'), ctx.selected); }
-  async startup() {
+  async startup({includeChatIndex=false}={}) {
     return this.locked(async () => {
       let ctx;
       try { ctx = await this.context(); }
@@ -319,7 +325,8 @@ export class Store {
       const recordsDir = path.join(ctx.root, 'records');
       await safePath(recordsDir, {root: ctx.root, type: 'directory'});
       const entries = await fs.readdir(recordsDir, {withFileTypes: true});
-      const records = [];
+      const selectionBefore=canonicalJson(ctx.selected);
+      const records = [], chatIndex = [];
       for (const e of entries) {
         if (!e.isDirectory() || e.isSymbolicLink()) continue;
         const recordId = e.name;
@@ -333,11 +340,19 @@ export class Store {
         } else if (scan.heads.length === 1 && selected === scan.heads[0]) status = 'current';
         else status = 'choice_required';
         records.push({record_id: recordId, kind: scan.valid.values().next().value?.state.kind, selected_revision: selected, candidate_revisions: scan.heads, status, problems: scan.problems});
+        if(includeChatIndex) {
+          const sessions=new Set(); let isCursor=false;
+          for(const {state} of scan.valid.values()) {
+            if(state.kind==='task'&&state.data.source_session?.provider==='codex') sessions.add(state.data.source_session.session_id);
+            if(state.kind==='profile'&&state.data.type==='codex-chat-cursor-v1') {sessions.add(state.data.session_id);isCursor=true;}
+          }
+          if(sessions.size)chatIndex.push({record_id:recordId,source_sessions:[...sessions],is_cursor:isCursor,accepted_data:scan.valid.get(selected)?.state.data||null});
+        }
       }
       // A missing record directory must not silently erase a locally accepted record.
       for (const recordId of Object.keys(ctx.selected)) if (!records.some(r => r.record_id === recordId)) records.push({record_id: recordId, selected_revision: ctx.selected[recordId], status: 'sync_incomplete', candidate_revisions: [], problems: [{reason: 'Accepted record is absent from shared folder'}]});
-      await this.saveSelection(ctx);
-      return {status: records.some(r => r.status === 'sync_incomplete') ? 'sync_incomplete' : records.some(r => r.status === 'choice_required') ? 'choice_required' : 'ready', workspace_id: ctx.workspace_id, records, freshness: 'Latest complete revisions observed locally; provider-wide synchronization is not asserted.'};
+      if(canonicalJson(ctx.selected)!==selectionBefore)await this.saveSelection(ctx);
+      return {status: records.some(r => r.status === 'sync_incomplete') ? 'sync_incomplete' : records.some(r => r.status === 'choice_required') ? 'choice_required' : 'ready', workspace_id: ctx.workspace_id, records, ...(includeChatIndex?{chat_index:chatIndex}:{}), freshness: 'Latest complete revisions observed locally; provider-wide synchronization is not asserted.'};
     });
   }
   async get(recordId, revisionId) {
@@ -387,8 +402,12 @@ export class Store {
   }
   async commit({record_id: recordId = randomUUID(), kind, data, expected_revision, artifacts = []}) {
     id.parse(recordId); data = validatePayload(kind, data);
-    return this.locked(async () => {
-      const ctx = await this.context();
+    return this.locked(async () => this._commit(await this.context(),{record_id:recordId,kind,data,expected_revision,artifacts}));
+  }
+  // Internal: caller must hold this Store's writer lock. Allows a chat handoff
+  // and its cursor to share base checks without nested or interleaved writers.
+  async _commit(ctx,{record_id:recordId,kind,data,expected_revision,artifacts=[]}) {
+      id.parse(recordId); data=validatePayload(kind,data);
       const scan = await this.scan(ctx, recordId);
       const selected = ctx.selected[recordId] || null;
       if (expected_revision !== undefined && expected_revision !== selected) throw fail('STALE_BASE', 'Selected revision changed; review again');
@@ -396,8 +415,19 @@ export class Store {
       if (scan.valid.size && (scan.heads.length !== 1 || selected !== scan.heads[0])) throw fail('CHOICE_REQUIRED', 'Review differences and obtain the user choice first');
       if (scan.valid.size && scan.valid.values().next().value.state.kind !== kind) throw fail('KIND_CHANGED', 'Record kind is immutable');
       if (selected && !scan.valid.has(selected)) throw fail('SYNC_INCOMPLETE', 'Accepted ancestor is unavailable');
+      // Skip an unchanged handoff only after validating its base and all referenced
+      // results. A stale writer or unresolved history must still require review.
+      if (kind === 'task' && selected) {
+        if (!Array.isArray(artifacts)) throw fail('INVALID_ARTIFACTS', 'Invalid artifacts');
+        const resolvedArtifacts = await this.taskArtifacts(ctx, data, artifacts);
+        await this.verifyArtifacts(ctx, resolvedArtifacts);
+        const accepted = scan.valid.get(selected).state;
+        if (canonicalJson(data) === canonicalJson(accepted.data)
+          && canonicalJson(canonicalArtifacts(resolvedArtifacts)) === canonicalJson(canonicalArtifacts(accepted.artifacts))) {
+          return {record_id: recordId, revision_id: selected, kind, status: 'unchanged'};
+        }
+      }
       return this._publish(ctx, {recordId, kind, data, artifacts, parents: selected ? [selected] : []});
-    });
   }
   fingerprint(scan, selected) {
     return hash({selected, heads: scan.heads, manifests: [...scan.valid.keys()].sort().map(r => scan.valid.get(r).manifest), problems: scan.problems});

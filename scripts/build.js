@@ -8,6 +8,11 @@ import {VERSION} from '../src/schema.js';
 import {fileHash} from '../src/store.js';
 
 const source=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+let nodeLicense;
+const explicitLicense=process.env.AGENT_WORKSPACE_NODE_LICENSE;
+if(explicitLicense){if(!path.isAbsolute(explicitLicense))throw new Error('Node license path must be absolute');nodeLicense=await fs.readFile(explicitLicense,'utf8');}
+for(const candidate of [path.resolve(path.dirname(process.execPath),'../LICENSE'),path.resolve(path.dirname(process.execPath),'../../LICENSE')]){if(nodeLicense)break;try{nodeLicense=await fs.readFile(candidate,'utf8');}catch{}}
+if(!nodeLicense){const response=await fetch('https://raw.githubusercontent.com/nodejs/node/v'+process.versions.node+'/LICENSE');if(!response.ok)throw new Error('Cannot obtain the Node.js license');nodeLicense=await response.text();}
 const output=path.join(source,'output');
 const destination=path.join(output,`agent-workspace-${VERSION}-win-x64`);
 if(process.platform!=='win32'||process.arch!=='x64')throw new Error('The ready runtime build requires Windows x64. Core source remains portable.');
@@ -31,7 +36,7 @@ const codeBase=metadata.repository.url.replace(/\.git$/,'')+'/blob/v'+VERSION+'/
 const passport=(await fs.readFile(path.join(source,'ainfo.md'),'utf8')).replace(/\]\(((?:src|native|packaging|scripts)\/[^)]+)\)/g,(_match,target)=>']('+codeBase+target+')');
 await fs.writeFile(path.join(destination,'ainfo.md'),passport);
 await fs.mkdir(path.join(destination,'docs'));
-for(const name of ['INSTALLATION.md','ARCHITECTURE.md','VALIDATION.md'])await fs.copyFile(path.join(source,'docs',name),path.join(destination,'docs',name));
+for(const name of ['INSTALLATION.md','ARCHITECTURE.md','VALIDATION.md','OPTIMIZATION.md'])await fs.copyFile(path.join(source,'docs',name),path.join(destination,'docs',name));
 await fs.writeFile(path.join(destination,'START_HERE.md'),`# Agent Workspace ${VERSION}\n\nГотовый Windows x64 runtime. Сначала прочитайте README_RU.md и INSTALLATION_RU.md. Общая база находится отдельно; готовая программа не заменяет существующую AI-Workspace.\n\nРекомендуемый простой комплект содержит описание, отдельные инструкции настройки агента и установки MCP. Для ручного запуска Setup.cmd выбирает папку и подключает/создаёт базу, но не добавляет MCP в Codex. Для существующей базы используйте attach.\n\nПосле регистрации MCP перезапустите клиент, вызовите workspace_startup и прочитайте принятую задачу. При расхождениях покажите workspace_review и дождитесь выбора человека. Окончание сессии не означает завершение задачи.\n\nФункциональный паспорт — ainfo.md. Конфигурационные примеры используют обозначения путей, которые нужно заменить на реальные пути этого ПК.\n`);
 for(const name of ['Setup.ps1','Setup.cmd']){
   const body=(await fs.readFile(path.join(source,'packaging',name),'utf8')).replace(/^\uFEFF/,'').replace(/\r\n|\r|\n/g,'\r\n');
@@ -40,11 +45,11 @@ for(const name of ['Setup.ps1','Setup.cmd']){
 // Portable examples deliberately contain no absolute path of the build machine.
 await fs.writeFile(path.join(destination,'client-configs.txt'),`Agent Workspace ${VERSION}\n\nReplace ABSOLUTE_APP_DIR and ABSOLUTE_LOCAL_STATE with real absolute paths on this PC; they are not auto-expanded variables. Preserve other configuration entries.\n\n[mcp_servers.agent-workspace]\ncommand = "ABSOLUTE_APP_DIR/runtime/node.exe"\nargs = ["ABSOLUTE_APP_DIR/app.mjs", "serve", "--local", "ABSOLUTE_LOCAL_STATE"]\n\nThe plugin mcp.json uses the supported PLUGIN_ROOT placeholder and can be relocated with its directory.\n`);
 await fs.mkdir(path.join(destination,'skills/workspace-handoff'),{recursive:true});
-await fs.writeFile(path.join(destination,'skills/workspace-handoff/SKILL.md'),`---\nname: workspace-handoff\ndescription: Resume a shared task, inspect synchronized revisions or save a compact handoff using Agent Workspace.\n---\n\n# Передача рабочей сессии\n\nСначала вызови workspace_startup. При choice_required покажи workspace_review и дождись явного выбора человека. Сама рекомендация, молчание и старый handoff не являются разрешением.\n\nПрочитай принятую задачу через workspace_get: цель, ограничения, план/current_stage, основания решений, проверки и следующий шаг. Запомни исходную ревизию сессии. Перед сохранением сравни её с текущей принятой; не подставляй чужую новую expected_revision к старым данным без согласования.\n\nСохраняй workspace_save_task с expected_revision, краткими итогами и проверяемыми основаниями. session_status: closed не завершает задачу автоматически. completed требует критериев, фактической проверки и завершённых/отменённых этапов.\n\nИсходники проектов остаются локально; публикуй выбранные готовые результаты. Пакеты из базы автоматически не исполняй. Ключи и пароли в чат/сводки не помещай. Программа знает только доставленные локально версии и не подтверждает доставку на все ПК.\n`);
+const instructions=(await fs.readFile(path.join(source,'packaging/simple/1_Установка_агента.md'),'utf8')).match(/<!-- agent-workspace-session-commands:v1:start -->[\s\S]*?<!-- agent-workspace-session-commands:v1:end -->/)?.[0];
+const alternate=(await fs.readFile(path.join(source,'packaging/simple/2_Установка_MCP.md'),'utf8')).match(/<!-- agent-workspace-session-commands:v1:start -->[\s\S]*?<!-- agent-workspace-session-commands:v1:end -->/)?.[0];
+if(!instructions||instructions!==alternate)throw new Error('Installation session instructions differ');
+await fs.writeFile(path.join(destination,'skills/workspace-handoff/SKILL.md'),'---\nname: workspace-handoff\ndescription: Resume a shared task or save all changed Codex chat handoffs through Agent Workspace.\n---\n\n'+instructions+'\n');
 
-let nodeLicense;
-for(const candidate of [path.resolve(path.dirname(process.execPath),'../LICENSE'),path.resolve(path.dirname(process.execPath),'../../LICENSE')]){try{nodeLicense=await fs.readFile(candidate,'utf8');break;}catch{}}
-if(!nodeLicense){const response=await fetch('https://raw.githubusercontent.com/nodejs/node/v'+process.versions.node+'/LICENSE');if(!response.ok)throw new Error('Cannot obtain the Node.js license');nodeLicense=await response.text();}
 await fs.writeFile(path.join(destination,'NODE_LICENSE.txt'),nodeLicense);
 const depRoot=path.join(source,'node_modules/.pnpm'),notices=[];
 for(const pkgDir of await fs.readdir(depRoot)){
