@@ -1,6 +1,6 @@
 import * as z from 'zod/v4';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 export const SCHEMA_VERSION = 1;
 export const id = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,95}$/);
 const text = z.string().max(12000);

@@ -48,13 +48,33 @@ test('increment reads only newer turns through a matching saved anchor', async (
   assert.equal(rpc.calls.length,2);
 });
 
-test('continued last turn is detected by its hash and retained', async () => {
+test('rewriting a completed last turn retains its text and requires review', async () => {
   const initial=await readCodexIncrement(fake([{data:[turn('t','before')],nextCursor:null}]),thread);
   const increment=await readCodexIncrement(fake([{data:[turn('t','after')],nextCursor:'older'}]),thread,initial.checkpoint);
   assert.equal(increment.status,'anchor_changed');
   assert.equal(increment.turns[0].messages.at(-1).text,'after');
   assert.equal(increment.coverage.complete_increment,false);
   assert.equal(increment.coverage.requires_review,true);
+});
+
+test('an in-progress saved turn can append its final answer and complete without history review', async () => {
+  for(const fullAudit of [false,true]) {
+    const unfinished=turn('t');unfinished.status='inProgress';unfinished.items.pop();
+    const initial=await readCodexIncrement(fake([{data:[unfinished],nextCursor:null}]),thread,null,{fullAudit});
+    assert.equal(initial.checkpoint.last_turn_status,'inProgress');
+    const finished=turn('t','Final answer after saving the session');
+    const rpc=fake([{data:[finished],nextCursor:fullAudit?null:'older'}]);
+    const increment=await readCodexIncrement(rpc,thread,initial.checkpoint,{fullAudit});
+    assert.equal(increment.status,fullAudit?'changed':'continued');
+    assert.equal(increment.coverage.complete_increment,true);
+    assert.equal(increment.coverage.requires_review,false);
+    assert.equal(increment.turns[0].messages.at(-1).text,'Final answer after saving the session');
+    assert.equal(increment.checkpoint.last_turn_status,'completed');
+    assert.equal(rpc.calls.length,1);
+    const repeated=await readCodexIncrement(fake([{data:[finished],nextCursor:null}]),thread,increment.checkpoint,{fullAudit});
+    assert.equal(repeated.status,'unchanged');
+    assert.deepEqual(repeated.checkpoint,increment.checkpoint);
+  }
 });
 
 test('missing anchor and bounded initial imports are never reported as complete', async () => {

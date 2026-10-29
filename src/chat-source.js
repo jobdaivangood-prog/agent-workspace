@@ -76,7 +76,7 @@ export async function connectCodexReadOnly({executable, codexHome, timeoutMs = 3
     rejectAll(error('CODEX_CLOSED', 'Read-only Codex app-server closed'));
   };
   try {
-    await send('initialize', {clientInfo:{name:'agent_workspace_readonly', title:'Agent Workspace read-only history', version:'0.3.0'}, capabilities:{experimentalApi:false}});
+    await send('initialize', {clientInfo:{name:'agent_workspace_readonly', title:'Agent Workspace read-only history', version:'0.3.1'}, capabilities:{experimentalApi:false}});
     child.stdin.write(JSON.stringify({jsonrpc:'2.0', method:'initialized', params:{}}) + '\n');
   } catch (failure) {await close(); throw failure;}
   return {
@@ -213,6 +213,10 @@ export async function readCodexIncrement(rpc, thread, checkpoint = null, options
     cursor = response.nextCursor || null;
   }
   const anchorChanged = !!anchor && hash(anchor) !== checkpoint?.last_turn_hash;
+  // A session can save its boundary before the current answer is finished.
+  // That persisted in-progress turn is mutable until its final reply/status
+  // arrives; completing it is ordinary continuation, not a history rewrite.
+  const continuedAnchor = anchorChanged && checkpoint?.last_turn_status === 'inProgress';
   // Include the anchor only if its public text/status changed during a continued turn.
   if (anchorChanged && !newestFirst.some(turn => turn.id === anchor.id)) newestFirst.push(anchor);
   if (anchor && !anchorChanged && !full_audit) {
@@ -223,8 +227,8 @@ export async function readCodexIncrement(rpc, thread, checkpoint = null, options
   const limited = limitedTurns(ordered,maxCharacters);
   const missingAnchor = !!checkpoint?.last_turn_id && !anchor;
   const completeHistory = !cursor && !limited.truncated;
-  const complete = !limited.truncated && (full_audit ? !cursor : !cursor || !!anchor) && !missingAnchor && !anchorChanged;
-  let status = anchorChanged ? 'anchor_changed' : missingAnchor ? 'anchor_missing' : !complete ? 'partial' : 'changed';
+  const complete = !limited.truncated && (full_audit ? !cursor : !cursor || !!anchor) && !missingAnchor && (!anchorChanged || continuedAnchor);
+  let status = anchorChanged && !continuedAnchor ? 'anchor_changed' : missingAnchor ? 'anchor_missing' : !complete ? 'partial' : continuedAnchor && !full_audit ? 'continued' : 'changed';
   if (full_audit && completeHistory) {
     nextCheckpoint.history_hash = hash(ordered);
     if (latestMatches && checkpoint.history_hash === nextCheckpoint.history_hash) status = 'unchanged';
@@ -232,7 +236,7 @@ export async function readCodexIncrement(rpc, thread, checkpoint = null, options
   }
   return {
     status, checkpoint:nextCheckpoint, turns:status === 'unchanged' ? [] : limited.turns,
-    coverage:{complete_increment:complete && status!=='history_changed', complete_history:full_audit ? completeHistory : undefined, full_audit, initial_import:!checkpoint, anchor_found:!!anchor, requires_review:anchorChanged || missingAnchor || status==='history_changed', truncated:limited.truncated, bounded:!!cursor && (full_audit || !anchor), legacy_unphased_assistant:ordered.some(turn=>turn.messages.some(message=>message.legacy_unphased)), turns_read:count, older_cursor:cursor, limitation:HISTORY_LIMITATION}
+    coverage:{complete_increment:complete && status!=='history_changed', complete_history:full_audit ? completeHistory : undefined, full_audit, initial_import:!checkpoint, anchor_found:!!anchor, requires_review:(anchorChanged && !continuedAnchor) || missingAnchor || status==='history_changed', truncated:limited.truncated, bounded:!!cursor && (full_audit || !anchor), legacy_unphased_assistant:ordered.some(turn=>turn.messages.some(message=>message.legacy_unphased)), turns_read:count, older_cursor:cursor, limitation:HISTORY_LIMITATION}
   };
 }
 
