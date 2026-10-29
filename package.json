@@ -1,0 +1,24 @@
+{
+  "name": "agent-workspace",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "description": "Portable, versioned project handoffs over an ordinary synchronized folder",
+  "repository": { "type": "git", "url": "https://github.com/jobdaivangood-prog/agent-workspace.git" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node scripts/check.js",
+    "build": "node scripts/build.js",
+    "build:kit": "python scripts/build-kit.py",
+    "verify:release": "node scripts/verify-release.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@iarna/toml": "2.2.5",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "esbuild": "0.28.2"
+  }
+}

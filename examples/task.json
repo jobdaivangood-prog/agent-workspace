@@ -1,0 +1,40 @@
+{
+  "project_id": "replace-with-project-id",
+  "title": "Название задачи",
+  "goal": "Какой результат требуется получить",
+  "current_stage": "prepare",
+  "plan": [
+    {
+      "id": "prepare",
+      "title": "Подготовить решение",
+      "done_criterion": "Решение соответствует согласованным ограничениям",
+      "status": "in_progress",
+      "verification": "Проверка ещё не выполнялась"
+    },
+    {
+      "id": "verify_result",
+      "title": "Проверить и сохранить готовый результат",
+      "done_criterion": "Результат проверен и опубликован отдельной записью",
+      "status": "pending",
+      "verification": "Проверка ещё не выполнялась"
+    }
+  ],
+  "session_status": "closed",
+  "task_status": "in_progress",
+  "done_criteria": ["Проверяемый критерий готовности"],
+  "constraints": ["Согласованные ограничения пользователя"],
+  "completed": [],
+  "claims": [],
+  "decisions": [],
+  "verification": [
+    {
+      "check": "Проверить готовый результат по критерию готовности",
+      "result": "Проверка ещё не выполнялась",
+      "status": "not_run",
+      "evidence": "Шаблон; замените фактическим результатом после проверки"
+    }
+  ],
+  "unfinished": ["Завершить подготовку решения и выполнить проверку"],
+  "next_steps": ["Прочитать текущий этап prepare и продолжить подготовку решения с учётом ограничений"],
+  "result_records": []
+}

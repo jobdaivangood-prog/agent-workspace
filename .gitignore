@@ -1,0 +1,16 @@
+node_modules/
+output/
+work/
+dist/
+.env
+.env.*
+*.local.json
+*.vault.json
+auth.json
+credentials.local.json
+credentials.vault.json
+*.zip
+*.exe
+*.rtf
+__pycache__/
+*.pyc
