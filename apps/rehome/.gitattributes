@@ -1,0 +1,2 @@
+# Preserve the exact helper bytes recorded in vendor/provenance.json.
+src/vendor/codex_backup/*.py -text

@@ -1,0 +1,25 @@
+{
+  "format": "rehome-upstream-provenance/1",
+  "python": {
+    "publisher": "astral-sh/python-build-standalone",
+    "release": "20261026",
+    "version": "3.12.16",
+    "target": "x86_64-pc-windows-msvc",
+    "archive": "cpython-3.12.16+20261026-x86_64-pc-windows-msvc-pgo-full.tar.zst",
+    "sha256": "37b4eb2818fee605fefa75ed156c4f2e1aaeaebaf662f9b30177c842ee16c48f",
+    "publisher_digest_verified": true,
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/tag/20261026",
+    "license_source": "python/licenses plus python/install/LICENSE.txt and Tcl/Tk notices from the same archive"
+  },
+  "zstd": {
+    "publisher": "facebook/zstd",
+    "version": "1.5.7",
+    "archive": "zstd-v1.5.7-win64.zip",
+    "sha256": "acb4e8111511749dc7a3ebedca9b04190e37a17afeb73f55d4425dbf0b90fad9",
+    "dll_sha256": "8f07e1112ed283e5cd2798833e9a3c32d8961381bc36da04af57a1b0ca9bd40b",
+    "publisher_digest_available": false,
+    "url": "https://github.com/facebook/zstd/releases/tag/v1.5.7"
+  },
+  "changes": "Unmodified native binaries and Tcl/Tk scripts; subset of stdlib packaged into ZIP, tests/site packages excluded; isolated ._pth added",
+  "application_license": "No open license granted for ReHome code; upstream component licenses retained"
+}

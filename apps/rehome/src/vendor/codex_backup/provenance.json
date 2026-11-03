@@ -1,0 +1,18 @@
+{
+  "source": "Existing user-owned codex-backup helpers; public CLI default made user-relative",
+  "files": [
+    {
+      "name": "backup.py",
+      "sha256": "4c35f7f87421771ca12f5158e6ebdf4822dae1a8f055829330b3faed475dd4b0",
+      "modified": true,
+      "original_sha256": "efd9b9821344c39860887675db35439826db3e94c10bccad3de971472f004401",
+      "changes": "Only standalone CLI default output path changed; reusable helper functions unchanged"
+    },
+    {
+      "name": "password_prompt.py",
+      "sha256": "a7e0a758e38aeb3bddc9184385340927087e3918596d5df20d423abd9b08e262",
+      "modified": false,
+      "original_sha256": "a7e0a758e38aeb3bddc9184385340927087e3918596d5df20d423abd9b08e262"
+    }
+  ]
+}

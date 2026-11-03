@@ -1,0 +1,10 @@
+ReHome application code, documentation, logo and launcher
+Copyright (c) 2026 jobdaivangood-prog. All rights reserved.
+
+No open-source license is granted for the original ReHome code at this time.
+Publishing the repository does not grant additional rights beyond the
+applicable GitHub Terms of Service and rights available under law.
+
+This notice does not apply to third-party components. Python, Tcl/Tk,
+zstd, their dependencies and referenced upstream material retain their own
+licenses and notices. See THIRD-PARTY-NOTICES.md and third_party/.
