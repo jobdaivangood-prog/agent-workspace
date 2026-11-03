@@ -18,10 +18,11 @@ import snapshot
 import environment_adapter as environment
 from rehome_environment_contract import resource_bytes
 import rehome_result_links as links
+import rehome_summary_history as summaries
 
 READY='ApplyREADY.json'
 PLAN='apply-plan.json'
-CORE=('state_5.sqlite','thread_history_1.sqlite','.codex-global-state.json','session_index.jsonl','sessions','archived_sessions','import-report.json')
+CORE=('state_5.sqlite','thread_history_1.sqlite','.codex-global-state.json','session_index.jsonl','sessions','archived_sessions','import-report.json',summaries.IDENTITY_FILE)
 SIDECARS=tuple(database+suffix for database in staging.DATABASES for suffix in ('-wal','-shm','-journal'))
 
 
@@ -101,6 +102,7 @@ def prepare(stage, destination, *, expected_digest, expected_stage_digest, targe
     pins={f:snapshot._hash_file(template/f)[0] for f in staging.DATABASES}
     staging._template(template,pins)
     candidate=backup._read(stage/'Package'/snapshot.CHAT_BUNDLE_PATH)
+    identity_receipt=summaries.identity_receipt(candidate,expected_digest)
     bundle=candidate['transfer']
     generation=uuid.uuid4().hex
     roots=_project_roots(bundle,projects,generation)
@@ -108,8 +110,11 @@ def prepare(stage, destination, *, expected_digest, expected_stage_digest, targe
     bundle=candidate['transfer']
     snapshot._write_json(destination/'Relocations.json',relocations)
     native._write_profile(bundle,destination/'Profile',roots,schema_template=template,
-                         synthetic_only=False,runtime_version=backup.SUPPORTED_RUNTIME,display_metadata=candidate.get('display_metadata'))
+                         synthetic_only=False,runtime_version=backup.SUPPORTED_RUNTIME,display_metadata=candidate.get('display_metadata'),
+                         materialized_turn_events=candidate.get('format')==summaries.FORMAT)
     profile=destination/'Profile'
+    if identity_receipt is not None:
+        snapshot._write_json(profile/summaries.IDENTITY_FILE,identity_receipt)
     with native._connect(profile/'state_5.sqlite') as db:
         for row in db.execute('SELECT id,rollout_path FROM threads').fetchall():
             relative=Path(row['rollout_path']).relative_to(profile)
@@ -149,7 +154,7 @@ def prepare(stage, destination, *, expected_digest, expected_stage_digest, targe
         'environment_groups_prepared':len(groups),'environment_groups_deferred':deferred,
         'profile_applied':False,'environment_activated':False,'runtime_version':backup.SUPPORTED_RUNTIME}
     snapshot._write_json(destination/PLAN,plan)
-    staging._readback(profile,bundle,roots,logical_profile=target,display_metadata=candidate.get('display_metadata'))
+    staging._readback(profile,bundle,roots,logical_profile=target,display_metadata=candidate.get('display_metadata'),materialized_turn_events=candidate.get('format')==summaries.FORMAT)
     snapshot._write_json(destination/READY,{'format':'rehome-native-apply-ready/1','files':_inventory(destination)})
     digest=snapshot._hash_file(destination/READY)[0]
     return verify(destination,expected_apply_digest=digest)
@@ -186,13 +191,14 @@ def verify(root, *, expected_apply_digest):
                     'Invalid native apply contract')
     staging.verify_native_stage(plan['stage'],expected_digest=plan['backup_manifest_sha256'],expected_stage_digest=plan['stage_digest'])
     history=backup._read(Path(plan['stage'])/'Package'/snapshot.CHAT_BUNDLE_PATH)
+    _verify_identity(root/'Profile',history,plan['backup_manifest_sha256'])
     bundle=history['transfer']
     backup._require(plan['project_roots']==_project_roots(bundle,Path(plan['projects_root']),plan['generation']),
                     'Apply project roots differ')
     history,relocations=_relocated(plan['stage'],plan['project_roots'])
     bundle=history['transfer']
     backup._require(backup._read(root/'Relocations.json')==relocations,'Result relocation ledger differs')
-    staging._readback(root/'Profile',bundle,plan['project_roots'],logical_profile=Path(plan['target_profile']),display_metadata=history.get('display_metadata'))
+    staging._readback(root/'Profile',bundle,plan['project_roots'],logical_profile=Path(plan['target_profile']),display_metadata=history.get('display_metadata'),materialized_turn_events=history.get('format')==summaries.FORMAT)
     groups,deferred,inventory=_environment_groups(Path(plan['stage']),Path(plan['target_home']),Path(plan['target_profile']))
     expected_changes=[{'target':str(Path(plan['target_profile'])/name),
                        'candidate':'Profile/'+name if (root/'Profile'/name).exists() else None,'kind':'native'} for name in (*CORE,*SIDECARS)]
@@ -240,6 +246,14 @@ def verify(root, *, expected_apply_digest):
 def verify_installed(candidate):
     """Semantic readback at final paths, after moves and before success."""
     plan=backup._read(Path(candidate)/PLAN)
+    original=backup._read(Path(plan['stage'])/'Package'/snapshot.CHAT_BUNDLE_PATH)
+    _verify_identity(Path(plan['target_profile']),original,plan['backup_manifest_sha256'])
     history,relocations=_relocated(plan['stage'],plan['project_roots'])
     backup._require(backup._read(Path(candidate)/'Relocations.json')==relocations,'Installed result relocation provenance differs')
-    staging._readback(Path(plan['target_profile']),history['transfer'],plan['project_roots'],display_metadata=history.get('display_metadata'))
+    staging._readback(Path(plan['target_profile']),history['transfer'],plan['project_roots'],display_metadata=history.get('display_metadata'),materialized_turn_events=history.get('format')==summaries.FORMAT)
+
+
+def _verify_identity(profile,history,digest):
+    expected=summaries.identity_receipt(history,digest)
+    file=Path(profile)/summaries.IDENTITY_FILE
+    backup._require((backup._read(file) if file.exists() else None)==expected,'Installed summary identity differs')

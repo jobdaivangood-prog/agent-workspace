@@ -2,7 +2,7 @@
 
 ## ReHome — приложение для бекапа Codex
 
-В этом репозитории также находится отдельное приложение **ReHome** для Windows: полная видимая история, проекты, выбранные готовые файлы, перенос ссылок на новый ПК и проверяемый откат. [Описание и инструкция](apps/rehome/README.md) · [Скачать beta](https://github.com/jobdaivangood-prog/agent-workspace/releases/tag/rehome-v0.1.41-beta.1).
+В этом репозитории также находится отдельное приложение **ReHome** для Windows. В режиме 0.2 команды «Закончи работу» и «Начни работу» переносят сводки задач, проекты и выбранные результаты; это не полная переписка. Прежние кнопки полного бекапа остаются отдельным режимом. [Описание и инструкция](apps/rehome/README.md) · [Скачать beta](https://github.com/jobdaivangood-prog/agent-workspace/releases/tag/rehome-v0.2.0-beta.1).
 
 ReHome не требует установки MCP Agent Workspace. Описание самого Agent Workspace приведено ниже.
 

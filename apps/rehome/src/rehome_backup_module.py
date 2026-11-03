@@ -151,10 +151,54 @@ def create_backup(profile, selected_thread_ids, destination, *, ready_files,
     return verify_backup(destination)
 
 
+def create_summary_backup(source, destination, *, source_profile, environment_stage=None, device_id='rehome-local'):
+    """Seal a distinct summary contract without accepting invented raw history."""
+    import rehome_summary_history as summaries
+    candidate = summaries.build(source)
+    destination = _new_target(destination)
+    with tempfile.TemporaryDirectory(prefix='rehome-summary-') as temporary:
+        temporary = Path(temporary)
+        payload, bindings = {}, {}
+        engine = environment_adapter.load_existing_engine(ENGINE_PATH)
+        selected = source['results']
+        _require(sum(row['bytes'] for row in selected) <= engine.MAX_TOTAL, 'Finished results exceed builder limit')
+        for row in selected:
+            _require(row['bytes'] <= engine.MAX_FILE, 'Finished file exceeds builder limit')
+            relative = row['relative_path']
+            selection_record = {relative:{'path':row['source_path'],'classification':managed.CLASSIFICATION}}
+            before = _result_bindings(selection_record,source_profile)[relative]
+            target = temporary / 'Files' / relative
+            _require(snapshot._copy_verified(Path(row['source_path']), target) == (row['sha256'], row['bytes']),
+                     'Selected summary result changed')
+            _require(_result_bindings(selection_record,source_profile)[relative] == before,
+                     'Selected result identity changed during copy')
+            _require(not engine.sensitive(Path(row['source_path']), environment_adapter._read_stable(target, engine.MAX_FILE)),
+                     'Credential-like file cannot be included as a result')
+            payload[relative] = target
+            bindings[relative] = {'path': row['source_path']}
+        descriptor = {'format':'rehome-summary-backup/1', 'text_policy':summaries.POLICY,
+            'runtime_version':SUPPORTED_RUNTIME, 'source_schema_version':candidate['source_schema_version'],
+            'history_path':snapshot.CHAT_BUNDLE_PATH, 'result_paths':sorted(payload),
+            'result_links_path':links.NAME, 'environment':'not_included',
+            'live_profile_apply_enabled':False, 'separate_source_files_included':False,
+            'structured_attachments_included':False}
+        snapshot._write_json(temporary / links.NAME, links.make_manifest(candidate, bindings))
+        payload[links.NAME] = temporary / links.NAME
+        if environment_stage is not None:
+            environment_archive.pack_backup_environment(environment_stage, temporary / ENVIRONMENT)
+            payload[ENVIRONMENT] = temporary / ENVIRONMENT
+            descriptor['environment'] = 'portable_resources_only'
+        snapshot._write_json(temporary / DESCRIPTOR, descriptor)
+        payload[DESCRIPTOR] = temporary / DESCRIPTOR
+        snapshot.create_snapshot(destination, version=1, device_id=device_id, results=payload, chat_bundle=candidate)
+    return verify_backup(destination, expected_text_policy=summaries.POLICY)
+
+
 def verify_backup(backup, *, expected_digest=None,
-                  expected_text_policy=filtering.VERBATIM_TEXT):
+                  expected_text_policy=None):
     """Verify all received bytes and the explicit history policy before staging."""
-    _require(expected_text_policy == filtering.VERBATIM_TEXT, 'Unsupported backup text policy')
+    import rehome_summary_history as summaries
+    _require(expected_text_policy in (None, filtering.VERBATIM_TEXT, summaries.POLICY), 'Unsupported backup text policy')
     root = snapshot._safe_path(Path(backup))
     info = snapshot.verify_snapshot(root)
     pin = info['manifest_digest']
@@ -165,9 +209,14 @@ def verify_backup(backup, *, expected_digest=None,
         'format', 'text_policy', 'runtime_version', 'source_schema_version', 'history_path',
         'result_paths', 'environment', 'live_profile_apply_enabled',
         'separate_source_files_included', 'structured_attachments_included'}
-    linked = descriptor.get('format') == 'rehome-backup/2' if isinstance(descriptor, dict) else False
+    summarized = isinstance(descriptor, dict) and descriptor.get('format') == 'rehome-summary-backup/1'
+    policy = summaries.POLICY if summarized else filtering.VERBATIM_TEXT
+    if expected_text_policy is not None:
+        _require(expected_text_policy == policy, 'Unexpected backup text policy')
+    expected_text_policy = policy
+    linked = descriptor.get('format') in ('rehome-backup/2', 'rehome-summary-backup/1') if isinstance(descriptor, dict) else False
     _require(isinstance(descriptor, dict) and set(descriptor) == fields | ({'result_links_path'} if linked else set()), 'Invalid backup descriptor')
-    _require(descriptor['format'] in (FORMAT, 'rehome-backup/2') and descriptor['text_policy'] == expected_text_policy and
+    _require(descriptor['format'] in (FORMAT, 'rehome-backup/2', 'rehome-summary-backup/1') and descriptor['text_policy'] == expected_text_policy and
              descriptor['source_schema_version'] == lineage.source.CURRENT_SCHEMA_VERSION and
              descriptor['history_path'] == snapshot.CHAT_BUNDLE_PATH and
              descriptor['live_profile_apply_enabled'] is False and
@@ -175,18 +224,27 @@ def verify_backup(backup, *, expected_digest=None,
              descriptor['structured_attachments_included'] is False, 'Backup contract differs')
     _runtime(descriptor['runtime_version'])
     candidate = _read(root / snapshot.CHAT_BUNDLE_PATH)
-    counts = review.validate_backup_history(candidate)
+    counts = summaries.validate(candidate) if summarized else review.validate_backup_history(candidate)
     _require(candidate['text_policy'] == descriptor['text_policy'], 'History policy differs')
     results = descriptor['result_paths']
     _require(isinstance(results, list) and all(isinstance(path, str) for path in results) and
              results == sorted(set(results)), 'Invalid finished result inventory')
     _result_paths(results, candidate)
+    if summarized:
+        expected_results = {r['relative_path']: (r['sha256'], r['bytes']) for r in candidate['source']['results']}
+        _require(set(results) == set(expected_results), 'Summary result inventory differs')
+        for relative, binding in expected_results.items():
+            _require(snapshot._hash_file(root / relative) == binding, 'Summary result bytes differ')
     environment = descriptor['environment']
     _require(environment in ('not_included', 'synthetic_resources_only', 'portable_resources_only'), 'Unsupported environment contract')
     expected = set(results) | {DESCRIPTOR, snapshot.CHAT_BUNDLE_PATH}
     if linked:
         _require(descriptor['result_links_path'] == links.NAME, 'Invalid result link path')
         links.validate(_read(root / links.NAME), candidate, results)
+        if summarized:
+            bindings = {r['relative_path']:{'path':r['source_path']} for r in candidate['source']['results']}
+            _require(_read(root / links.NAME) == links.make_manifest(candidate, bindings),
+                     'Summary link bindings differ from selected results')
         expected.add(links.NAME)
     if environment != 'not_included':
         expected.add(ENVIRONMENT)
@@ -263,7 +321,7 @@ def info_manifest(source):
 
 
 def stage_restore(backup, destination, *, expected_digest, receiving_runtime_version,
-                  expected_text_policy=filtering.VERBATIM_TEXT):
+                  expected_text_policy=None):
     """Receive a pinned backup into a fresh folder. This is not profile apply."""
     _runtime(receiving_runtime_version)
     _require(isinstance(expected_digest, str) and len(expected_digest) == 64 and

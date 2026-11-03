@@ -133,8 +133,12 @@ def apply_to_profile(root,logical_root,bundle,metadata):
             records=[json.loads(line) for line in journal.read_bytes().splitlines()]
             created=timestamp(values['created_at']);records[0]['timestamp']=created;records[0]['payload']['timestamp']=created
             flat=[(turn,message) for turn in thread['turns'] for message in turn['messages']]
-            for record,(turn,message) in zip(records[1:],flat):
-                record['timestamp']=timestamp(data['turns'][turn['id']]['items'][message['id']]['created_at_ms'],milliseconds=True)
+            stamps={message['id']:timestamp(data['turns'][turn['id']]['items'][message['id']]['created_at_ms'],milliseconds=True)
+                    for turn,message in flat}
+            for record in records[1:]:
+                payload=record['payload']
+                item=payload.get('item',{}) if record['type']=='event_msg' else payload
+                if item.get('id') in stamps:record['timestamp']=stamps[item['id']]
             journal.write_text(''.join(native._json(r)+'\n' for r in records),encoding='utf-8')
             if old_path!=new_path:
                 journal.rename(root/new_path);journal=root/new_path
