@@ -25,6 +25,7 @@ import trial_guard
 import rehome_journal
 import rehome_closed_snapshot
 import rehome_result_links as links
+from rehome_session_report import Timings
 
 
 class WorkflowError(ValueError):
@@ -151,7 +152,7 @@ def set_backup_folder(settings,folder,settings_path=None):
     for protected in (settings['source_profile'],settings['local_root']):
         backup._require(not staging._overlap(folder,managed._local(protected,missing=True)),
                         'Backup destination overlaps active data')
-    updated={**settings,'backup_root':str(folder)}
+    updated={**settings,'backup_root':str(folder),'backup_root_selected':True}
     if settings_path is not None:
         transaction._atomic(managed._local(settings_path),updated)
     return updated
@@ -394,9 +395,11 @@ def create_backup(settings,cancel,events):
 
 
 @_profile_operation
-def restore_backup(settings,backup_path,cancel,events):
+def restore_backup(settings,backup_path,cancel,events,*,session_publication=False):
+    timings=Timings()
     _recovery_first(settings)
-    _runtime(settings)
+    with timings.measure('Проверка версии Codex'):
+        _runtime(settings)
     try:
         staging._template(settings['schema_template'],settings['template_pins'])
     except (ValueError, OSError, sqlite3.DatabaseError) as error:
@@ -405,36 +408,51 @@ def restore_backup(settings,backup_path,cancel,events):
         raise WorkflowError('restore_resources_invalid',
             'Шаблон восстановления ReHome отсутствует или повреждён. Распакуйте полный ZIP-комплект '
             'в обычную локальную папку и откройте его снова. Прежние данные можно вернуть кнопкой отката.') from error
-    info=backup.verify_backup(backup_path)
+    with timings.measure('Проверка входного пакета'):
+        info=backup.verify_backup(backup_path)
+    if backup._read(Path(backup_path)/snapshot.CHAT_BUNDLE_PATH).get('format')=='rehome-summary-history/1' and not session_publication:
+        raise WorkflowError('summary_requires_session_start',
+            'Это пакет сводок. Восстанавливайте его командой «Начни работу»: она проверяет публикацию и сохраняет связь файлов для следующей копии.')
     if 'display_metadata' not in backup._read(Path(backup_path)/snapshot.CHAT_BUNDLE_PATH):
         raise WorkflowError('display_metadata_required','Копия создана ранней проверочной версией без дат истории. Создайте новую копию через ReHome.')
-    guard=_wait(settings,cancel,events)
+    with timings.measure('Ожидание закрытия Codex'):
+        guard=_wait(settings,cancel,events)
     check=lambda: _check(cancel,guard,settings)
     recovery_check=lambda: guard.assert_quiet(check_environment=False)
     check()
     events.put(('progress','Проверяю копию и готовлю восстановление с откатом.'))
     local=Path(settings['local_root'])
-    staged=staging.prepare_native(backup_path,local/'Staging',expected_digest=info['manifest_digest'],
-        runtime_version=settings['runtime_version'],schema_template=settings['schema_template'],
-        template_pins=settings['template_pins'],project_map=_project_map(backup_path))
+    with timings.measure('Промежуточный профиль и проверка'):
+        staged=staging.prepare_native(backup_path,local/'Staging',expected_digest=info['manifest_digest'],
+            runtime_version=settings['runtime_version'],schema_template=settings['schema_template'],
+            template_pins=settings['template_pins'],project_map=_project_map(backup_path))
     snapshot._write_json(local/('stage-receipt-'+uuid.uuid4().hex+'.json'),staged)
     check()
     identity=uuid.uuid4().hex
-    candidate=apply.prepare(staged['job'],local/('Apply-'+identity),expected_digest=info['manifest_digest'],
-        expected_stage_digest=staged['stage_digest'],target_profile=settings['source_profile'],projects_root=settings['projects_root'],
-        target_home=settings['source_home'])
+    with timings.measure('Окончательные пути и профиль'):
+        candidate=apply.prepare(staged['job'],local/('Apply-'+identity),expected_digest=info['manifest_digest'],
+            expected_stage_digest=staged['stage_digest'],target_profile=settings['source_profile'],projects_root=settings['projects_root'],
+            target_home=settings['source_home'])
     snapshot._write_json(local/('apply-receipt-'+identity+'.json'),candidate)
     check()
-    prepared=transaction.prepare(candidate['candidate'],local/('Transaction-'+identity),
-        expected_apply_digest=candidate['apply_digest'],guard=check)
+    with timings.measure('Подготовка установки и отката'):
+        prepared=transaction.prepare(candidate['candidate'],local/('Transaction-'+identity),
+            expected_apply_digest=candidate['apply_digest'],guard=check)
     pointer=_recovery_path(settings);pointer.parent.mkdir(parents=True,exist_ok=True)
     transaction._atomic(pointer,prepared)
     transaction._atomic(local/'latest-transaction.json',prepared)
+    if backup._read(Path(backup_path)/snapshot.CHAT_BUNDLE_PATH).get('format')=='rehome-summary-history/1':
+        # Persist the package's exact transaction before the first profile move.
+        # A restored earlier identity can resolve its paths even after a crash
+        # immediately following activation, or a later operation and rollback.
+        mappings=local/'SessionMappings';mappings.mkdir(parents=True,exist_ok=True)
+        transaction._atomic(mappings/(info['manifest_digest']+'.json'),prepared)
     events.put(('progress','Восстанавливаю данные. Пока не открывайте Codex.'))
-    result=transaction.activate(prepared['job'],transaction_digest=prepared['transaction_digest'],guard=check,rollback_guard=recovery_check)
+    with timings.measure('Установка и проверка результата'):
+        result=transaction.activate(prepared['job'],transaction_digest=prepared['transaction_digest'],guard=check,rollback_guard=recovery_check)
     relocated=backup._read(Path(candidate['candidate'])/'Relocations.json')
     return {**result,'message':f"История и проекты восстановлены. Готовых файлов: {info['counts']['results']}; обновлено ссылок: {len(relocated)}. Прежнее состояние сохранено для отката. Среда подготовлена; настройки и плагины требуют проверки.",
-            'environment_activated':False,'nas_delivery_verified':False}
+            'environment_activated':False,'nas_delivery_verified':False,'timings':timings.entries}
 
 
 def _project_map(path):

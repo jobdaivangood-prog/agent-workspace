@@ -111,6 +111,8 @@ class BackupApp:
         self.cancel_button = ttk.Button(frame, text="Отменить ожидание", command=self.cancel)
         self.cancel_button.pack(fill="x", pady=(10, 3))
         self.cancel_button.state(["disabled"])
+        self.commands_button=ttk.Button(frame,text='Включить команды «Начни / Закончи работу»',command=self.install_session_commands)
+        self.commands_button.pack(fill='x',pady=(8,0))
         status_card=ttk.Frame(frame,padding=16,style='Card.TFrame');status_card.pack(fill='both',expand=True,pady=(14,0))
         ttk.Label(status_card,text='СОСТОЯНИЕ',style='CardMuted.TLabel',font=('Segoe UI Semibold',9)).pack(anchor='w',pady=(0,7))
         ttk.Label(status_card, textvariable=self.status, style='Card.TLabel',wraplength=650, justify="left").pack(anchor="w")
@@ -119,7 +121,7 @@ class BackupApp:
         self.progress=ttk.Progressbar(status_card,mode='indeterminate')
         self.progress.pack(fill='x',pady=(12,0))
         ttk.Label(frame, text="ReHome попросит закрыть Codex перед операцией. Прежнее состояние сохраняется для отката.",style='Muted.TLabel',wraplength=700, justify="left").pack(anchor="w", pady=(14, 0))
-        ttk.Label(frame,text='ReHome 0.1.41 · beta  |  Windows x64',style='Muted.TLabel',font=('Segoe UI',9)).pack(anchor='w',pady=(12,0))
+        ttk.Label(frame,text='ReHome 0.2.0 · beta  |  Windows x64',style='Muted.TLabel',font=('Segoe UI',9)).pack(anchor='w',pady=(12,0))
         root.after(POLL_MS, self._poll)
 
     def _context_text(self):
@@ -140,6 +142,15 @@ class BackupApp:
         except Exception:
             self.status.set('Не удалось выбрать папку. Используйте отдельную локальную папку или папку Synology Drive.')
 
+    def install_session_commands(self):
+        try:
+            from rehome_install_commands import install
+            data_root=self.settings_path.parent
+            install(Path.home()/'.codex',data_root/'Start-ReHome.ps1',data_root)
+            self.status.set('Команды ReHome установлены; прежние правила сохранены. Перезапустите Codex. Команда «Закончи работу» подготовит сводки и последние результаты, «Начни работу» получит последнюю полную публикацию с откатом.')
+        except Exception:
+            self.status.set('Не удалось установить команды. Проверьте полный локальный комплект ReHome и доступ к пользовательскому AGENTS.md.')
+
     def _recovery_available(self):
         method=getattr(self.service,'recovery_available',None)
         return method(self.settings) if method else (Path(self.settings['local_root'])/'latest-transaction.json').is_file()
@@ -150,7 +161,7 @@ class BackupApp:
                 button.state(["disabled"] if busy else ["!disabled"])
             except tk.TclError:
                 pass
-        for name in ('discover_button','enrich_button'):
+        for name in ('discover_button','enrich_button','commands_button'):
             button=getattr(self,name,None)
             if button is not None:button.state(['disabled'] if busy else ['!disabled'])
         if busy:self.progress.start(14)

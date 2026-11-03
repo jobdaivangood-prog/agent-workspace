@@ -552,8 +552,18 @@ def import_profile(bundle, destination_root, project_roots, *, schema_template=N
                           synthetic_only=True, runtime_version=CODEX_VERSION)
 
 
+def _completed_item(message):
+    if message['role']=='assistant':
+        return {'type':'AgentMessage','id':message['id'],
+                'content':[{'type':'Text','text':message['text']}],
+                'phase':{'final_answer':'FinalAnswer','commentary':'Commentary'}.get(message['phase'],message['phase']),
+                'memory_citation':None,'delivery':None,'questions':None}
+    return {'type':'UserMessage','id':message['id'],
+            'content':[{'type':'text','text':message['text']}],'client_id':None}
+
+
 def _write_profile(bundle, destination_root, project_roots, *, schema_template,
-                   synthetic_only, runtime_version,display_metadata=None):
+                   synthetic_only, runtime_version,display_metadata=None, materialized_turn_events=False):
     """Internal writer, used after the public caller's contract/target checks."""
     _validate_transfer(bundle, synthetic_only=synthetic_only)
     if display_metadata is not None:
@@ -603,9 +613,14 @@ def _write_profile(bundle, destination_root, project_roots, *, schema_template,
                     rollout_rel = Path("archived_sessions" if thread["archived"] else "sessions") / ("rollout-1970-01-01T00-00-00-" + tid + ".jsonl")
                     rollout_final = dest / rollout_rel
                     first = next((m["text"] for t in thread["turns"] for m in t["messages"] if m["role"] == "user"), "")
+                    if materialized_turn_events:
+                        # Codex list requires a nonempty preview/first-message
+                        # index. This is an explicit import label, not an added
+                        # user message or a quotation of the original prompt.
+                        first='Сводка ReHome: '+thread['title'][:250]
                     columns = ["id", "rollout_path", "created_at", "updated_at", "source", "model_provider", "cwd", "title", "sandbox_policy", "approval_mode", "has_user_event", "archived", "cli_version", "first_user_message", "history_mode", "name", "is_pinned", "thread_section_id", "section_position", "project_id", "preview", "originator"]
                     values = [tid, str(rollout_final), 0, 0, "cli", "openai", cwd, thread["title"],
-                              _json({"type": "read-only"}), "untrusted", int(bool(first)), int(thread["archived"]),
+                              _json({"type": "read-only"}), "untrusted", int(bool(first) or materialized_turn_events), int(thread["archived"]),
                               runtime_version, first, "paginated", thread["name"], int(thread["is_pinned"]),
                               thread["section_id"], position, pid, first[:300], originator]
                     conn.execute("INSERT INTO threads(" + ",".join(columns) + ") VALUES(" + ",".join("?" for _ in values) + ")", values)
@@ -619,6 +634,10 @@ def _write_profile(bundle, destination_root, project_roots, *, schema_template,
                     ordinal = 1
                     for turn in thread["turns"]:
                         start = ordinal
+                        if materialized_turn_events:
+                            journal_records.append({'timestamp':'1970-01-01T00:00:00Z','ordinal':ordinal,
+                                'type':'event_msg','payload':{'type':'task_started','turn_id':turn['id']}})
+                            ordinal+=1
                         first_user = next((m["id"] for m in turn["messages"] if m["role"] == "user"), None)
                         final_agent = next((m["id"] for m in reversed(turn["messages"]) if m["role"] == "assistant" and m["phase"] == "final_answer"), None)
                         for message in turn["messages"]:
@@ -631,11 +650,21 @@ def _write_profile(bundle, destination_root, project_roots, *, schema_template,
                                 prompt_item["phase"] = message["phase"]
                             journal_records.append({"timestamp": "1970-01-01T00:00:00Z",
                                                     "ordinal": ordinal, "type": "response_item", "payload": prompt_item})
+                            if materialized_turn_events:
+                                ordinal+=1
+                                journal_records.append({'timestamp':'1970-01-01T00:00:00Z','ordinal':ordinal,
+                                    'type':'event_msg','payload':{'type':'item_completed','thread_id':tid,
+                                    'turn_id':turn['id'],'item':_completed_item(message)}})
                             conn.execute("INSERT INTO history.thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal) VALUES(?,?,?,?,?,?,?,?)",
                                          (tid, turn["id"], message["id"], ordinal, 0, _json(native), native["type"], ordinal))
                             ordinal += 1
                         if not turn["messages"]:
                             ordinal += 1
+                        if materialized_turn_events:
+                            journal_records.append({'timestamp':'1970-01-01T00:00:00Z','ordinal':ordinal,
+                                'type':'event_msg','payload':{'type':'task_complete','turn_id':turn['id'],
+                                'last_agent_message':next((m['text'] for m in reversed(turn['messages']) if m['role']=='assistant'),None)}})
+                            ordinal+=1
                         conn.execute("INSERT INTO history.thread_turns(thread_id,turn_id,rollout_ordinal,status,started_at,completed_at,duration_ms,first_user_item_id,final_agent_item_id,rollout_end_ordinal,root_turn_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                                      (tid, turn["id"], start, turn.get("status", "completed"), 0, 0, 0, first_user, final_agent, ordinal - 1, turn["id"]))
                     journal.write_text("".join(_json(record) + "\n" for record in journal_records), encoding="utf-8")

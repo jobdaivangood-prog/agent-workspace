@@ -187,7 +187,7 @@ def _ui_readback(profile, bundle, roots, *, logical_profile=None,display_metadat
         'schema_fingerprint': native.SCHEMA_FINGERPRINT}, 'Staged import provenance differs')
 
 
-def _readback(profile, bundle, project_roots, *, logical_profile=None,display_metadata=None):
+def _readback(profile, bundle, project_roots, *, logical_profile=None,display_metadata=None, materialized_turn_events=False):
     """Check typed rows and exact generated journals, without native execution."""
     logical_profile=profile if logical_profile is None else logical_profile
     with native._connect(profile / DATABASES[0], readonly=True) as state, \
@@ -221,6 +221,10 @@ def _readback(profile, bundle, project_roots, *, logical_profile=None,display_me
         expected_items, expected_turns = 0, 0
         for thread in bundle['threads']:
             row = rows[thread['id']]
+            if materialized_turn_events:
+                label='Сводка ReHome: '+thread['title'][:250]
+                _require(row['has_user_event']==1 and row['first_user_message']==label and row['preview']==label[:300],
+                         'Summary list visibility metadata differs')
             for key in ('title', 'name', 'project_id', 'is_pinned', 'archived'):
                 _require(row[key] == thread[key], 'Staged chat metadata differs')
             _require(row['thread_section_id'] == thread['section_id'] and row['originator'] == 'rehome-backup-staging',
@@ -253,6 +257,10 @@ def _readback(profile, bundle, project_roots, *, logical_profile=None,display_me
             ordinal = 1
             for turn in thread['turns']:
                 start = ordinal
+                if materialized_turn_events:
+                    expected_records.append({'timestamp':'1970-01-01T00:00:00Z','ordinal':ordinal,
+                        'type':'event_msg','payload':{'type':'task_started','turn_id':turn['id']}})
+                    ordinal+=1
                 items = [json.loads(r[0]) for r in history.execute(
                     'SELECT item_json FROM thread_items WHERE thread_id=? AND turn_id=? ORDER BY rollout_ordinal', (thread['id'], turn['id']))]
                 _require(items == [native._native_item(m, append_attachment_notice=False) for m in turn['messages']],
@@ -267,8 +275,18 @@ def _readback(profile, bundle, project_roots, *, logical_profile=None,display_me
                     expected_records.append({'timestamp': stamp, 'ordinal': ordinal,
                                              'type': 'response_item', 'payload': payload})
                     ordinal += 1
+                    if materialized_turn_events:
+                        expected_records.append({'timestamp':stamp,'ordinal':ordinal,'type':'event_msg',
+                            'payload':{'type':'item_completed','thread_id':thread['id'],'turn_id':turn['id'],
+                                       'item':native._completed_item(message)}})
+                        ordinal+=1
                 if not turn['messages']:
                     ordinal += 1
+                if materialized_turn_events:
+                    expected_records.append({'timestamp':'1970-01-01T00:00:00Z','ordinal':ordinal,'type':'event_msg',
+                        'payload':{'type':'task_complete','turn_id':turn['id'],
+                        'last_agent_message':next((m['text'] for m in reversed(turn['messages']) if m['role']=='assistant'),None)}})
+                    ordinal+=1
                 turn_row = next(t for t in turns if t['turn_id'] == turn['id'])
                 expected_turn={'thread_id': thread['id'], 'turn_id': turn['id'], 'rollout_ordinal': start,
                     'status': turn['status'], 'error_json': None, 'started_at': 0, 'completed_at': 0, 'duration_ms': 0,
@@ -283,9 +301,10 @@ def _readback(profile, bundle, project_roots, *, logical_profile=None,display_me
                               'ORDER BY rollout_ordinal', (thread['id'], turn['id']))]
                 for offset, (item_row, message) in enumerate(zip(item_rows, turn['messages'])):
                     item = native._native_item(message, append_attachment_notice=False)
+                    item_ordinal=start+offset if not materialized_turn_events else start+2+offset*2
                     expected_item={'thread_id': thread['id'], 'turn_id': turn['id'], 'item_id': message['id'],
-                        'rollout_ordinal': start + offset, 'created_at_ms': 0, 'item_json': native._json(item),
-                        'item_type': item['type'], 'updated_at_ordinal': start + offset,
+                        'rollout_ordinal': item_ordinal, 'created_at_ms': 0, 'item_json': native._json(item),
+                        'item_type': item['type'], 'updated_at_ordinal': item_ordinal,
                         'started_at_ms': None, 'completed_at_ms': None}
                     if display_metadata is not None:expected_item.update(display_metadata['threads'][thread['id']]['turns'][turn['id']]['items'][message['id']])
                     _require(item_row==expected_item,'Staged item metadata differs')
@@ -344,13 +363,14 @@ def prepare_native(backup_path, staging_root, *, expected_digest, runtime_versio
     for path in roots.values():
         Path(path).mkdir(parents=True)
     native._write_profile(bundle, job / 'Profile', roots, schema_template=template,
-                          synthetic_only=False, runtime_version=runtime_version,display_metadata=candidate.get('display_metadata'))
+                          synthetic_only=False, runtime_version=runtime_version,display_metadata=candidate.get('display_metadata'),
+                          materialized_turn_events=candidate.get('format')=='rehome-summary-history/1')
     _template(template, template_pins)
     for relative in backup._read(job / 'Package' / backup.DESCRIPTOR)['result_paths']:
         parts = relative.split('/')
         target = Path(roots[parts[1]]).joinpath(*parts[2:])
         snapshot._copy_verified(job / 'Package' / relative, target)
-    _readback(job / 'Profile', bundle, roots,display_metadata=candidate.get('display_metadata'))
+    _readback(job / 'Profile', bundle, roots,display_metadata=candidate.get('display_metadata'),materialized_turn_events=candidate.get('format')=='rehome-summary-history/1')
     if backup._read(job/'Package'/backup.DESCRIPTOR)['environment'] == 'portable_resources_only':
         import rehome_environment_stage
         rehome_environment_stage.prepare(job)
@@ -406,7 +426,7 @@ def verify_native_stage(job, *, expected_digest, expected_stage_digest):
              all(_pin(p) for p in marker['schema_template_pins'].values()), 'Invalid schema template pins')
     _require(_schema_signatures(job / 'Profile') == marker['schema_signatures'], 'Staged native schema differs')
     _layout(job, candidate['transfer'], marker['project_roots'])
-    _readback(job / 'Profile', candidate['transfer'], marker['project_roots'],display_metadata=candidate.get('display_metadata'))
+    _readback(job / 'Profile', candidate['transfer'], marker['project_roots'],display_metadata=candidate.get('display_metadata'),materialized_turn_events=candidate.get('format')=='rehome-summary-history/1')
     _require(not (job / 'Profile' / native.MARKER).exists(), 'Synthetic marker prohibited')
     _require(_inventory(job) == ready['files'], 'Native staging changed during verification')
     _require(snapshot._hash_file(job / READY)[0] == expected_stage_digest, 'Native READY changed during verification')

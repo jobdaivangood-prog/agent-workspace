@@ -27,7 +27,7 @@ import rehome_python_runtime as runtime
 import snapshot
 from build_icon import write_icon
 
-VERSION='0.1.41-beta.1'
+VERSION='0.2.0-beta.1'
 PYTHON_ARCHIVE='cpython-3.12.16+20261026-x86_64-pc-windows-msvc-pgo-full.tar.zst'
 PYTHON_SHA='37b4eb2818fee605fefa75ed156c4f2e1aaeaebaf662f9b30177c842ee16c48f'
 ZSTD_ARCHIVE='zstd-v1.5.7-win64.zip'
@@ -109,6 +109,7 @@ def instructions_html(source):
         def link(match):
             url=match.group(2)
             if url=='FINISHED-FILES.ru.md':url='Finished-files.html'
+            elif url=='SESSION-MODE.ru.md':url='Session-mode.html'
             elif not url.startswith('https://'):
                 url='https://github.com/jobdaivangood-prog/agent-workspace/blob/rehome-v'+VERSION+'/apps/rehome/docs/'+url
             return '<a href="'+html.escape(url,quote=True)+'">'+match.group(1)+'</a>'
@@ -155,8 +156,12 @@ def build(output,cache):
     assets=output/'assets';assets.mkdir()
     write_icon(assets/'ReHome.ico')
     shutil.copyfile(ROOT/'resources/ReHome.svg',assets/'ReHome.svg')
+    shutil.copyfile(ROOT/'resources/Close-Codex.ps1',assets/'Close-Codex.ps1')
+    shutil.copyfile(ROOT/'resources/SESSION-COMMANDS.md',assets/'SESSION-COMMANDS.md')
+    shutil.copyfile(ROOT/'resources/SESSION-INPUT.md',assets/'SESSION-INPUT.md')
     (assets/'Instructions.html').write_text(instructions_html((ROOT/'docs/USER-GUIDE.ru.md').read_text(encoding='utf-8')),encoding='utf-8')
     (assets/'Finished-files.html').write_text(instructions_html((ROOT/'docs/FINISHED-FILES.ru.md').read_text(encoding='utf-8')),encoding='utf-8')
+    (assets/'Session-mode.html').write_text(instructions_html((ROOT/'docs/SESSION-MODE.ru.md').read_text(encoding='utf-8')),encoding='utf-8')
     shutil.copyfile(ROOT/'COPYRIGHT',assets/'COPYRIGHT.txt')
     shutil.copyfile(ROOT/'THIRD-PARTY-NOTICES.md',assets/'THIRD-PARTY-NOTICES.txt')
     files={}

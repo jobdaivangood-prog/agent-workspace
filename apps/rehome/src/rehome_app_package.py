@@ -152,13 +152,53 @@ def configure(program,data_root):
         'runtime_executable':str(executable),'runtime_sha256':NATIVE_SHA,'runtime_version':backup.SUPPORTED_RUNTIME,
         'schema_template':resources['schema_template'],
         'template_pins':resources['template_pins'],
-        'decoder':resources['decoder'],'finished_results':[]}
+        'decoder':resources['decoder'],'finished_results':[],'backup_root_selected':False}
     snapshot._write_json(path,settings)
     return path
 
 
+def entry(arguments):
+    """Verified launcher entry; also cleans up a task if configuration fails."""
+    import re
+    import subprocess
+    args=list(arguments)
+    if len(args)!=6:raise ValueError('Invalid launcher arguments')
+    data_root,action,input_file,pin,output,task_name=args
+    if task_name and not re.fullmatch(r'ReHome-Session-[a-f0-9]{32}',task_name):
+        raise ValueError('Invalid session worker task')
+    try:
+        program=Path(__file__).resolve().parent.parent
+        os.environ['TCL_LIBRARY']=str(program/'Runtime/tcl/tcl8.6')
+        os.environ['TK_LIBRARY']=str(program/'Runtime/tcl/tk8.6')
+        settings=configure(program,Path(data_root))
+        if action=='ui':
+            import rehome_backup_app
+            rehome_backup_app.main(['--settings',str(settings)])
+        else:
+            import rehome_sessions
+            cli=[action,'--settings',str(settings),'--output',output,
+                 '--launcher',str(Path(data_root)/'Start-ReHome.ps1')]
+            if input_file:cli+=['--input',input_file]
+            if pin:cli+=['--pin',pin]
+            rehome_sessions.main(cli)
+    except Exception:
+        if action!='ui' and output:
+            target=snapshot._safe_path(Path(output),allow_missing=True)
+            if not target.exists():
+                target.parent.mkdir(parents=True,exist_ok=True)
+                snapshot._write_json(target,{'status':'failed','error_type':'launcher_or_configuration_failed',
+                                            'profile_success_not_asserted':True})
+        raise
+    finally:
+        if task_name:
+            subprocess.run(['schtasks.exe','/Delete','/TN',task_name,'/F'],capture_output=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW,timeout=20,check=False)
+
+
 POWERSHELL=r'''[CmdletBinding()]
-param([switch]$Check)
+param([switch]$Check,
+ [ValidateSet('ui','inventory','prepare','finish','start','install')][string]$Action='ui',
+ [string]$InputFile='', [string]$RequestPin='', [string]$OutputFile='')
 $ErrorActionPreference='Stop'
 $program=Join-Path $PSScriptRoot 'Program'
 $pin='__PROGRAM_PIN__'
@@ -206,15 +246,39 @@ try {
  if($Check){Write-Output '{"status":"local_program_verified","profile_applied":false}';exit 0}
  $runtime=Join-Path $program 'Runtime'
  $app=Join-Path $program 'App'
- $code='import sys,runpy; from pathlib import Path; sys.path.insert(0,sys.argv[1]); import rehome_app_package; p=rehome_app_package.configure(Path(sys.argv[1]).parent,Path(sys.argv[2])); sys.argv=["ReHome","--settings",str(p)]; runpy.run_module("rehome_backup_app",run_name="__main__")'
+ $taskName=if($Action-in @('finish','start')){'ReHome-Session-'+[guid]::NewGuid().ToString('N')}else{''}
+ $code='import sys;sys.path.insert(0,sys.argv[1]);import rehome_app_package;rehome_app_package.entry(sys.argv[2:])'
  function Quote([string]$Value){return '"'+$Value.Replace('"','\"')+'"'}
  $info=New-Object Diagnostics.ProcessStartInfo
  $info.FileName=Join-Path $runtime 'pythonw.exe'
- $info.Arguments='-B -c '+(Quote $code)+' '+(Quote $app)+' '+(Quote $PSScriptRoot)
+ if($Action-ne 'ui' -and [string]::IsNullOrWhiteSpace($OutputFile)){throw 'Session action requires OutputFile'}
+ $info.Arguments='-I -B -c '+(Quote $code)+' '+(Quote $app)+' '+(Quote $PSScriptRoot)+' '+(Quote $Action)+' '+(Quote $InputFile)+' '+(Quote $RequestPin)+' '+(Quote $OutputFile)+' '+(Quote $taskName)
  $info.WorkingDirectory=$runtime;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
  foreach($key in @('PYTHONPATH','PYTHONHOME','PYTHONUSERBASE','TCL_LIBRARY','TK_LIBRARY','TCLLIBPATH')){[void]$info.EnvironmentVariables.Remove($key)}
  $info.EnvironmentVariables['TCL_LIBRARY']=Join-Path $runtime 'tcl/tcl8.6'
  $info.EnvironmentVariables['TK_LIBRARY']=Join-Path $runtime 'tcl/tk8.6'
+ if($taskName) {
+  # An on-demand task has no schedule/password and runs as this interactive
+  # user, without elevation. Its worker survives the Codex parent's job exit.
+  $taskAction=New-ScheduledTaskAction -Execute $info.FileName -Argument $info.Arguments -WorkingDirectory $runtime
+  $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+  $taskSettings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $taskName -Action $taskAction -Principal $principal -Settings $taskSettings | Out-Null
+  try {
+   # An elevated SSH launcher otherwise gives the limited worker read-only
+   # access to its own task. Preserve existing ACEs and grant this same user
+   # control of this one newly created, limited, unscheduled task for cleanup.
+   $scheduler=New-Object -ComObject Schedule.Service;$scheduler.Connect()
+   $registered=$scheduler.GetFolder('\').GetTask($taskName)
+   $security=New-Object Security.AccessControl.RawSecurityDescriptor ($registered.GetSecurityDescriptor(4))
+   $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+   $ace=New-Object Security.AccessControl.CommonAce ([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,0x1f01ff,$sid,$false,$null)
+   $security.DiscretionaryAcl.InsertAce(0,$ace)
+   $registered.SetSecurityDescriptor($security.GetSddlForm([Security.AccessControl.AccessControlSections]::Access),0)
+   Start-ScheduledTask -TaskName $taskName
+  } catch {Unregister-ScheduledTask -TaskName $taskName -Confirm:$false;throw}
+  Write-Output ('ReHome worker requested: '+$taskName);exit 0
+ }
  $process=[Diagnostics.Process]::Start($info)
  $process.WaitForExit()
  if($process.ExitCode-ne 0){throw 'ReHome window could not start'}

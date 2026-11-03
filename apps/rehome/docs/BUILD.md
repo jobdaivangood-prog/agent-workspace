@@ -3,8 +3,8 @@
 Собирайте из каталога `apps/rehome` на Windows x64. Нужны доверенный Python 3.12 и штатный C# compiler `%SystemRoot%/Microsoft.NET/Framework64/v4.0.30319/csc.exe`. Ничего не устанавливается в систему, реальный профиль Codex не читается.
 
 ```powershell
-python scripts/build_release.py --output output/build-0.1.41-beta.1
-$env:REHOME_TEST_DECODER=(Resolve-Path output/build-0.1.41-beta.1/build-tools/libzstd.dll).Path
+python scripts/build_release.py --output output/build-0.2.0-beta.1
+$env:REHOME_TEST_DECODER=(Resolve-Path output/build-0.2.0-beta.1/build-tools/libzstd.dll).Path
 python scripts/run_tests.py
 ```
 
