@@ -17,11 +17,23 @@ import rehome_review_sources as managed
 import snapshot
 import environment_adapter as environment
 from rehome_environment_contract import resource_bytes
+import rehome_result_links as links
 
 READY='ApplyREADY.json'
 PLAN='apply-plan.json'
 CORE=('state_5.sqlite','thread_history_1.sqlite','.codex-global-state.json','session_index.jsonl','sessions','archived_sessions','import-report.json')
 SIDECARS=tuple(database+suffix for database in staging.DATABASES for suffix in ('-wal','-shm','-journal'))
+
+
+def _relocated(stage, roots):
+    package=Path(stage)/'Package'
+    history=backup._read(package/snapshot.CHAT_BUNDLE_PATH)
+    descriptor=backup._read(package/backup.DESCRIPTOR)
+    if descriptor.get('result_links_path'):
+        manifest=backup._read(package/links.NAME)
+        links.validate(manifest,history,descriptor['result_paths'])
+        return links.derive(history,manifest,roots)
+    return history,[]
 
 
 def _environment_groups(stage,home,profile,inventory=None):
@@ -92,6 +104,9 @@ def prepare(stage, destination, *, expected_digest, expected_stage_digest, targe
     bundle=candidate['transfer']
     generation=uuid.uuid4().hex
     roots=_project_roots(bundle,projects,generation)
+    candidate,relocations=_relocated(stage,roots)
+    bundle=candidate['transfer']
+    snapshot._write_json(destination/'Relocations.json',relocations)
     native._write_profile(bundle,destination/'Profile',roots,schema_template=template,
                          synthetic_only=False,runtime_version=backup.SUPPORTED_RUNTIME,display_metadata=candidate.get('display_metadata'))
     profile=destination/'Profile'
@@ -174,6 +189,9 @@ def verify(root, *, expected_apply_digest):
     bundle=history['transfer']
     backup._require(plan['project_roots']==_project_roots(bundle,Path(plan['projects_root']),plan['generation']),
                     'Apply project roots differ')
+    history,relocations=_relocated(plan['stage'],plan['project_roots'])
+    bundle=history['transfer']
+    backup._require(backup._read(root/'Relocations.json')==relocations,'Result relocation ledger differs')
     staging._readback(root/'Profile',bundle,plan['project_roots'],logical_profile=Path(plan['target_profile']),display_metadata=history.get('display_metadata'))
     groups,deferred,inventory=_environment_groups(Path(plan['stage']),Path(plan['target_home']),Path(plan['target_profile']))
     expected_changes=[{'target':str(Path(plan['target_profile'])/name),
@@ -222,5 +240,6 @@ def verify(root, *, expected_apply_digest):
 def verify_installed(candidate):
     """Semantic readback at final paths, after moves and before success."""
     plan=backup._read(Path(candidate)/PLAN)
-    history=backup._read(Path(plan['stage'])/'Package'/snapshot.CHAT_BUNDLE_PATH)
+    history,relocations=_relocated(plan['stage'],plan['project_roots'])
+    backup._require(backup._read(Path(candidate)/'Relocations.json')==relocations,'Installed result relocation provenance differs')
     staging._readback(Path(plan['target_profile']),history['transfer'],plan['project_roots'],display_metadata=history.get('display_metadata'))

@@ -27,7 +27,7 @@ import rehome_python_runtime as runtime
 import snapshot
 from build_icon import write_icon
 
-VERSION='0.1.40-beta.1'
+VERSION='0.1.41-beta.1'
 PYTHON_ARCHIVE='cpython-3.12.16+20261026-x86_64-pc-windows-msvc-pgo-full.tar.zst'
 PYTHON_SHA='37b4eb2818fee605fefa75ed156c4f2e1aaeaebaf662f9b30177c842ee16c48f'
 ZSTD_ARCHIVE='zstd-v1.5.7-win64.zip'
@@ -94,14 +94,23 @@ def create_schema(destination):
 
 def instructions_html(source):
     output=[]
+    fenced=False
     for line in source.splitlines():
+        if line.startswith('```'):
+            output.append('</code></pre>' if fenced else '<pre><code>')
+            fenced=not fenced
+            continue
+        if fenced:
+            output.append(html.escape(line)+'\n')
+            continue
         value=html.escape(line)
         value=re.sub(r'\*\*(.+?)\*\*',r'<strong>\1</strong>',value)
         value=re.sub(r'`([^`]+)`',r'<code>\1</code>',value)
         def link(match):
             url=match.group(2)
-            if not url.startswith('https://'):
-                url='https://github.com/jobdaivangood-prog/agent-workspace/blob/rehome-v0.1.40-beta.1/apps/rehome/docs/'+url
+            if url=='FINISHED-FILES.ru.md':url='Finished-files.html'
+            elif not url.startswith('https://'):
+                url='https://github.com/jobdaivangood-prog/agent-workspace/blob/rehome-v'+VERSION+'/apps/rehome/docs/'+url
             return '<a href="'+html.escape(url,quote=True)+'">'+match.group(1)+'</a>'
         value=re.sub(r'\[([^\]]+)\]\(([^)]+)\)',link,value)
         if line.startswith('# '):output.append('<h1>'+value[2:]+'</h1>')
@@ -112,7 +121,7 @@ def instructions_html(source):
         '<style>body{margin:0;background:#f3f6fb;color:#182a46;font:16px/1.65 "Segoe UI",sans-serif}'
         'article{max-width:850px;margin:48px auto;padding:40px;background:white;border-radius:20px}'
         'h1{font-size:32px}h2{margin-top:36px;color:#245cdb}code{background:#edf2fa;padding:2px 5px;border-radius:4px}'
-        'p{margin:10px 0}.brand{font-size:13px;color:#5d6c82}</style><article><div class="brand">ReHome '+VERSION+
+        'p{margin:10px 0}pre{overflow:auto;background:#edf2fa;padding:16px;line-height:1.4}.brand{font-size:13px;color:#5d6c82}</style><article><div class="brand">ReHome '+VERSION+
         '</div>'+''.join(output)+'</article></html>')
 
 
@@ -147,6 +156,7 @@ def build(output,cache):
     write_icon(assets/'ReHome.ico')
     shutil.copyfile(ROOT/'resources/ReHome.svg',assets/'ReHome.svg')
     (assets/'Instructions.html').write_text(instructions_html((ROOT/'docs/USER-GUIDE.ru.md').read_text(encoding='utf-8')),encoding='utf-8')
+    (assets/'Finished-files.html').write_text(instructions_html((ROOT/'docs/FINISHED-FILES.ru.md').read_text(encoding='utf-8')),encoding='utf-8')
     shutil.copyfile(ROOT/'COPYRIGHT',assets/'COPYRIGHT.txt')
     shutil.copyfile(ROOT/'THIRD-PARTY-NOTICES.md',assets/'THIRD-PARTY-NOTICES.txt')
     files={}
@@ -178,7 +188,7 @@ def build(output,cache):
         '[Сторонние компоненты](Program/Assets/THIRD-PARTY-NOTICES.txt)\n\n'
         'Windows 10/11 x64; поддерживается Codex 0.166.0-alpha.5.1. '
         'Папка приложения должна находиться вне Synology/OneDrive; копии могут храниться в Synology Drive.\n\n'
-        'Исходники и документация: https://github.com/jobdaivangood-prog/agent-workspace/tree/rehome-v0.1.40-beta.1/apps/rehome\n',encoding='utf-8')
+        'Исходники и документация: https://github.com/jobdaivangood-prog/agent-workspace/tree/rehome-v'+VERSION+'/apps/rehome\n',encoding='utf-8')
     archive=output/('ReHome-'+VERSION+'-windows-x64.zip')
     expected={}
     with zipfile.ZipFile(archive,'x',zipfile.ZIP_DEFLATED) as zipped:

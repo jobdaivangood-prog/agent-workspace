@@ -24,6 +24,7 @@ import snapshot
 import trial_guard
 import rehome_journal
 import rehome_closed_snapshot
+import rehome_result_links as links
 
 
 class WorkflowError(ValueError):
@@ -242,14 +243,61 @@ def stable_source(profile,destination,guard,decoder=None):
 def _results(settings,profile):
     results={}
     for item in settings.get('finished_results',[]):
-        backup._require(set(item)=={'project_id','path','display_name','classification'} and
+        backup._require(set(item) in ({'project_id','path','display_name','classification'}, {'project_id','path','display_name','classification','aliases'}) and
                         item['classification']==managed.CLASSIFICATION,'Finished result classification required')
         snapshot._validate_relative(item['display_name'])
         selection._file_allowed(item['path'],profile)
-        relative='Projects/'+item['project_id']+'/Results/'+item['display_name']
+        # Identity is bound to the full source path, never just its basename.
+        identity=hashlib.sha256((links.source_key(item['path']) or item['path']).encode('utf-8')).hexdigest()[:16]
+        relative='Projects/'+item['project_id']+'/Results/'+identity+'/'+item['display_name']
         backup._require(relative not in results,'Finished result path collision')
-        results[relative]={'path':item['path'],'classification':managed.CLASSIFICATION}
+        results[relative]={'path':item['path'],'classification':managed.CLASSIFICATION,
+                          **({'aliases':item['aliases']} if item.get('aliases') else {})}
     return results
+
+
+def discover_results(settings,backup_path):
+    """Inspect only linked paths after an explicit user request; never scan trees."""
+    info=backup.verify_backup(backup_path)
+    history=backup._read(Path(backup_path)/snapshot.CHAT_BUNDLE_PATH)
+    projects={p['id']:p['name'] for p in history['transfer']['projects']}
+    if any(t['project_id'] is None for t in history['transfer']['threads']):projects['__projectless__']='Без проекта'
+    rows={}
+    for occurrence in links.collect(history):
+        pid=occurrence['project_id'] or '__projectless__'
+        identity=(pid,occurrence['key'])
+        if identity in rows:continue
+        path=occurrence['path']
+        status='missing'
+        if pid not in projects:status='projectless'
+        else:
+            try:
+                selection._file_allowed(path,settings['source_profile'])
+                local=managed._local(path)
+                backup._require(local.is_file() and local.stat().st_nlink==1,'Result is not an ordinary unlinked file')
+                backup._require(not any(p.casefold() in ('.ssh','.aws','.azure','.gnupg') for p in local.parts),'Protected source path')
+                status='available'
+            except (OSError,ValueError):pass
+        rows[identity]={'project_id':pid,'project_name':projects.get(pid,'Без проекта'),
+                        'path':path,'display_name':Path(path).name,'status':status}
+    return {'format':'rehome-result-discovery/1','source_backup':str(backup_path),
+            'manifest_digest':info['manifest_digest'],'rows':list(rows.values()),
+            'projects':[{'id':pid,'name':name,'roots':[]} for pid,name in projects.items()]}
+
+
+def enrich_backup(settings,backup_path,cancel,events,*,expected_digest):
+    selected=settings.get('finished_results',[])
+    if not selected:raise WorkflowError('no_results','Сначала выберите готовые файлы для включения.')
+    try:info=backup.verify_backup(backup_path,expected_digest=expected_digest)
+    except (OSError,ValueError) as error:
+        raise WorkflowError('reviewed_backup_changed','Копия недоступна, повреждена или изменилась после просмотра. Повторите поиск файлов в копии и проверьте выбор.') from error
+    output=managed._local(settings['backup_root'],missing=True);output.mkdir(parents=True,exist_ok=True)
+    destination=output/('ReHome-'+uuid.uuid4().hex)
+    events.put(('progress','Добавляю выбранные файлы в новую копию. Исходная копия сохранится.'))
+    if Path(cancel).exists():raise WorkflowError('cancelled','Операция отменена до копирования.')
+    result=backup.add_results(backup_path,destination,ready_files=_results(settings,settings['source_profile']),
+                             profile=settings['source_profile'],expected_digest=info['manifest_digest'])
+    return {**result,'backup':str(destination),'message':'Новая копия с готовыми файлами создана и проверена: '+str(destination)}
 
 
 def project_choices(settings):
@@ -384,7 +432,8 @@ def restore_backup(settings,backup_path,cancel,events):
     transaction._atomic(local/'latest-transaction.json',prepared)
     events.put(('progress','Восстанавливаю данные. Пока не открывайте Codex.'))
     result=transaction.activate(prepared['job'],transaction_digest=prepared['transaction_digest'],guard=check,rollback_guard=recovery_check)
-    return {**result,'message':'История и проекты восстановлены. Прежнее состояние сохранено для отката. Среда подготовлена; настройки и плагины требуют проверки.',
+    relocated=backup._read(Path(candidate['candidate'])/'Relocations.json')
+    return {**result,'message':f"История и проекты восстановлены. Готовых файлов: {info['counts']['results']}; обновлено ссылок: {len(relocated)}. Прежнее состояние сохранено для отката. Среда подготовлена; настройки и плагины требуют проверки.",
             'environment_activated':False,'nas_delivery_verified':False}
 
 

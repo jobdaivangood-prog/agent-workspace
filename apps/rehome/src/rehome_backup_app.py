@@ -98,6 +98,10 @@ class BackupApp:
         self.restore_button.pack(side='left',fill="x",expand=True,pady=3,padx=(6,0))
         self.finished_button = ttk.Button(frame, text="Выбрать готовые файлы", command=self.choose_finished_files)
         self.finished_button.pack(fill="x", pady=(10, 2))
+        self.discover_button=ttk.Button(frame,text='Найти файлы по ссылкам в копии',command=self.choose_result_source)
+        self.discover_button.pack(fill='x',pady=2)
+        self.enrich_button=ttk.Button(frame,text='Создать копию с выбранными файлами',command=self.start_enrich)
+        self.enrich_button.pack(fill='x',pady=2)
         self.finished_count = tk.StringVar(value=self._finished_count_text())
         ttk.Label(frame, textvariable=self.finished_count).pack(anchor="w")
         ttk.Label(frame, text="Включаются только файлы, которые вы выбрали сами.", style='Muted.TLabel',wraplength=660, justify="left").pack(anchor="w", pady=(2, 8))
@@ -115,7 +119,7 @@ class BackupApp:
         self.progress=ttk.Progressbar(status_card,mode='indeterminate')
         self.progress.pack(fill='x',pady=(12,0))
         ttk.Label(frame, text="ReHome попросит закрыть Codex перед операцией. Прежнее состояние сохраняется для отката.",style='Muted.TLabel',wraplength=700, justify="left").pack(anchor="w", pady=(14, 0))
-        ttk.Label(frame,text='ReHome 0.1.40 · beta  |  Windows x64',style='Muted.TLabel',font=('Segoe UI',9)).pack(anchor='w',pady=(12,0))
+        ttk.Label(frame,text='ReHome 0.1.41 · beta  |  Windows x64',style='Muted.TLabel',font=('Segoe UI',9)).pack(anchor='w',pady=(12,0))
         root.after(POLL_MS, self._poll)
 
     def _context_text(self):
@@ -146,6 +150,9 @@ class BackupApp:
                 button.state(["disabled"] if busy else ["!disabled"])
             except tk.TclError:
                 pass
+        for name in ('discover_button','enrich_button'):
+            button=getattr(self,name,None)
+            if button is not None:button.state(['disabled'] if busy else ['!disabled'])
         if busy:self.progress.start(14)
         else:self.progress.stop()
         self.cancel_button.state(["!disabled"] if busy else ["disabled"])
@@ -160,7 +167,7 @@ class BackupApp:
             self.status.set("Выбор готовых файлов пока недоступен.")
             return
         try:
-            choices = choices_fn(self.settings)
+            choices = getattr(self,'result_projects',None) or choices_fn(self.settings)
         except Exception:
             self.status.set("Не удалось получить список проектов.")
             return
@@ -210,6 +217,74 @@ class BackupApp:
         dialog.wait_window()
         return result["project_id"]
 
+    def choose_result_source(self):
+        chosen=filedialog.askdirectory(initialdir=self.settings['backup_root'],mustexist=True,
+                                        title='Выберите папку копии с manifest.json и ReHome.json')
+        if chosen:self._start('discover',Path(chosen))
+
+    def start_enrich(self):
+        source=getattr(self,'result_source',None)
+        if not source:
+            self.status.set('Сначала нажмите «Найти файлы по ссылкам в копии» и выберите исходную копию.')
+            return
+        self._start('enrich',source)
+
+    def review_discovered(self,result):
+        self.result_source=Path(result['source_backup'])
+        self.result_source_pin=result['manifest_digest']
+        self.result_projects=result['projects']
+        dialog=tk.Toplevel(self.root);dialog.title('Готовые файлы из ссылок');dialog.geometry('850x540')
+        ttk.Label(dialog,text='Выберите только готовые результаты. Для отсутствующего файла можно указать его локальный экземпляр.',
+                  wraplength=800).pack(anchor='w',padx=16,pady=12)
+        frame=ttk.Frame(dialog);frame.pack(fill='both',expand=True,padx=16)
+        tree=ttk.Treeview(frame,columns=('project','path','status'),show='headings',selectmode='extended')
+        for key,label,width in [('project','Проект',160),('path','Файл',450),('status','Состояние',150)]:
+            tree.heading(key,text=label);tree.column(key,width=width)
+        scroll=ttk.Scrollbar(frame,orient='vertical',command=tree.yview);tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right',fill='y');tree.pack(fill='both',expand=True)
+        rows={}
+        for index,row in enumerate(result['rows']):
+            identity=str(index);rows[identity]=dict(row)
+            tree.insert('', 'end',iid=identity,values=(row['project_name'],row['path'],'Доступен' if row['status']=='available' else 'Нужен локальный файл'))
+        controls=ttk.Frame(dialog,padding=16);controls.pack(fill='x')
+        def select_available():tree.selection_set([key for key,row in rows.items() if row['status']=='available'])
+        def locate():
+            selected=tree.selection()
+            if len(selected)!=1:return
+            key=selected[0];row=rows[key]
+            chosen=filedialog.askopenfilename(parent=dialog,title='Укажите готовый файл для этой ссылки')
+            if chosen:
+                row['aliases']=sorted(set([row['path'],*row.get('aliases',[])]))
+                row.update(path=chosen,display_name=Path(chosen).name,status='available')
+                tree.item(key,values=(row['project_name'],chosen,'Указан вручную'))
+        def accept():
+            existing=list(self.settings.get('finished_results',[]))
+            for key in tree.selection():
+                row=rows[key]
+                if row['status']!='available':continue
+                item={k:row[k] for k in ('project_id','path','display_name')}
+                item['classification']='selected_finished_generated'
+                if row.get('aliases'):item['aliases']=row['aliases']
+                matching=next((e for e in existing if e['project_id']==item['project_id'] and os.path.normcase(e['path'])==os.path.normcase(item['path'])),None)
+                if matching:
+                    aliases=sorted(set(matching.get('aliases',[])+item.get('aliases',[])))
+                    if aliases:matching['aliases']=aliases
+                else:existing.append(item)
+            self.settings['finished_results']=existing
+            self.finished_count.set(self._finished_count_text())
+            self.status.set('Файлы выбраны. Нажмите «Создать копию с выбранными файлами». Исходная копия сохранится.')
+            dialog.destroy()
+        def clear():
+            self.settings['finished_results']=[]
+            self.finished_count.set(self._finished_count_text())
+            tree.selection_remove(*tree.selection())
+            self.status.set('Список выбранных файлов очищен. Файлы на диске сохранены.')
+        ttk.Button(controls,text='Выделить доступные',command=select_available).pack(side='left')
+        ttk.Button(controls,text='Указать локальный файл',command=locate).pack(side='left',padx=8)
+        ttk.Button(controls,text='Очистить список',command=clear).pack(side='left')
+        ttk.Button(controls,text='Добавить выбранные',command=accept).pack(side='right')
+        dialog.transient(self.root);dialog.grab_set()
+
     def start_backup(self):
         self._start("backup")
 
@@ -239,6 +314,13 @@ class BackupApp:
                     result = self.service.create_backup(self.settings, self.cancel_path, self.events)
                 elif action == "restore":
                     result = self.service.restore_backup(self.settings, backup_path, self.cancel_path, self.events)
+                elif action == 'discover':
+                    result=self.service.discover_results(self.settings,backup_path)
+                    self.events.put(('discovery',result))
+                    return
+                elif action == 'enrich':
+                    result=self.service.enrich_backup(self.settings,backup_path,self.cancel_path,self.events,
+                                                     expected_digest=self.result_source_pin)
                 else:
                     result = self.service.rollback(self.settings, self.cancel_path, self.events)
                 self.events.put(("result", result))
@@ -246,7 +328,8 @@ class BackupApp:
                 # Never put exception text or tracebacks on the UI channel.
                 known=getattr(self.service,'WorkflowError',())
                 safe={'code':error.code,'message':error.public_message} if isinstance(error,known) else {
-                    'code':'operation_failed','message':'Операция не выполнена. Состояние сохранено; доступен возврат прежних данных.'}
+                    'code':'operation_failed','message':('Не удалось обработать копию или выбранные файлы. Рабочий профиль не изменён. Проверьте файлы и повторите выбор.'
+                        if action in ('discover','enrich') else 'Операция не выполнена. Состояние сохранено; доступен возврат прежних данных.')}
                 self.events.put(('error',safe))
             finally:
                 try:
@@ -289,6 +372,8 @@ class BackupApp:
                     self.status.set(self._result_text(payload))
                     if isinstance(payload,dict) and payload.get('rollback_available'):
                         self.recovery_button.pack(fill='x',pady=3,before=self.cancel_button)
+                elif kind == 'discovery':
+                    self.review_discovered(payload)
                 elif kind == "error":
                     self.status.set(safe_error_text(payload))
                 if kind in {'result','error'} and self._recovery_available():
