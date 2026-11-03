@@ -1,0 +1,30 @@
+name: ReHome Windows checks
+on:
+  push:
+    paths: ['apps/rehome/**', '.github/workflows/rehome-tests.yml']
+  pull_request:
+    paths: ['apps/rehome/**', '.github/workflows/rehome-tests.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/rehome
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.12'
+      - name: Build from pinned upstream archives
+        run: python scripts/build_release.py --output output/ci-build
+      - name: Synthetic regression suite
+        run: |
+          $env:REHOME_TEST_DECODER=(Resolve-Path output/ci-build/build-tools/libzstd.dll).Path
+          python scripts/run_tests.py
+      - name: Verify native launcher without profile operations
+        run: |
+          $process=Start-Process -FilePath output/ci-build/ReHome/ReHome.exe -ArgumentList '--check' -Wait -PassThru -WindowStyle Hidden
+          if($process.ExitCode -ne 0){throw 'Launcher verification failed'}
