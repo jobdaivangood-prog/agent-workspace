@@ -109,7 +109,7 @@ class ResultLinkApplyTests(unittest.TestCase):
         candidate_result = candidate_root / "Projects" / self.fixture.fixture.fixture.pid / "Results" / "final.py"
         self.assertEqual(staged["source_path"].read_bytes(), candidate_result.read_bytes())
         self.assertEqual(snapshot._hash_file(staged["source_path"]), snapshot._hash_file(candidate_result))
-        self.assertIn(f"<{expected_result.as_posix()}>", session_text)
+        self.assertIn(f"<{expected_result.as_uri()}>", session_text)
 
         prepared = transaction.prepare(candidate_root, self.fixture.root / "TransactionLinked",
                                        expected_apply_digest=result["apply_digest"], guard=lambda: None)

@@ -2,7 +2,7 @@
 import copy
 import hashlib
 import ntpath
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 from urllib.parse import unquote, urlsplit
 
@@ -25,16 +25,19 @@ def _destination(href):
         parsed = urlsplit(value)
         if parsed.netloc not in ('', 'localhost') or parsed.query:
             return None
-        value = unquote(parsed.path)
+        value = parsed.path
         suffix = '#' + parsed.fragment if parsed.fragment else ''
     elif value.startswith('sandbox:/'):
-        value, suffix = unquote(value[len('sandbox:'):]), ''
+        value, suffix = value[len('sandbox:'):], ''
     else:
         value, suffix = value, ''
     # Codex file references can carry line/column suffixes.
     match = re.search(r'(:[0-9]+(?::[0-9]+)?|#page=[0-9]+)$', value)
     if match:
         value, suffix = value[:match.start()], match.group() + suffix
+    # Encoded delimiters belong to the filename, never to navigation syntax.
+    if href.lstrip('<').startswith(('file:', 'sandbox:/')):
+        value = unquote(value)
     if re.match(r'^/[A-Za-z]:[/\\]', value):
         value = value[1:]
     if re.match(r'^[A-Za-z]:[/\\]', value):
@@ -196,7 +199,10 @@ def derive(candidate, manifest, roots):
         parts = occurrence['relative'].split('/')
         target = Path(roots[parts[1]]).joinpath(*parts[2:]).as_posix()
         _require(not any(c in target for c in '<>\r\n'), 'Unrepresentable result link destination')
-        replacement = '<' + target + occurrence['suffix'] + '>'
+        # Codex URI-decodes clicked file references. A canonical file URI keeps
+        # literal percent sequences distinct from spaces, including on reimport.
+        pure = PureWindowsPath(target) if re.match(r'^[A-Za-z]:/', target) else PurePosixPath(target)
+        replacement = '<' + pure.as_uri() + occurrence['suffix'] + '>'
         grouped.setdefault(key, []).append((occurrence, replacement))
         ledger.append({**occurrence, 'replacement':replacement, 'target_path':target})
     for thread in derived['transfer']['threads']:

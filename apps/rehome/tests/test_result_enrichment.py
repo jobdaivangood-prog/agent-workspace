@@ -261,7 +261,7 @@ class ResultEnrichmentTests(unittest.TestCase):
                             if t["id"] == self.fixture.tid
                             for turn in t["turns"] for m in turn["messages"] if m["role"] == "assistant")
         expected_target = relocated_root / Path(*source_paths[links.source_key(str(manually_selected))].split("/")[2:])
-        self.assertIn(f"<{expected_target.as_posix()}>", derived_text)
+        self.assertIn(f"<{expected_target.as_uri()}>", derived_text)
         self.assertEqual(source_history_bytes, source_history.read_bytes())
 
 

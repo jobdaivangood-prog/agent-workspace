@@ -1,6 +1,7 @@
 """Pure tests for portable result-link discovery and relocation."""
 
 import copy
+from pathlib import PureWindowsPath
 import unittest
 
 import rehome_result_links as links
@@ -179,7 +180,7 @@ class ResultLinkTests(unittest.TestCase):
         derived, ledger = links.derive(candidate, manifest, {"p": "/new/project root"})
         assistant_text = derived["transfer"]["threads"][0]["turns"][0]["messages"][0]["text"]
         user_text = derived["transfer"]["threads"][0]["turns"][0]["messages"][1]["text"]
-        self.assertIn("</new/project root/Results/one/result one.pdf>", assistant_text)
+        self.assertIn("<file:///new/project%20root/Results/one/result%20one.pdf>", assistant_text)
         self.assertIn("https://example.test/a", assistant_text)
         self.assertEqual(original["transfer"]["threads"][0]["turns"][0]["messages"][0]["text"],
                          candidate["transfer"]["threads"][0]["turns"][0]["messages"][0]["text"])
@@ -188,6 +189,23 @@ class ResultLinkTests(unittest.TestCase):
                          derived["transfer"]["threads"][0]["archived"])
         self.assertEqual(1, len(ledger))
         self.assertEqual(relative, ledger[0]["relative"])
+
+    def test_derived_file_uri_roundtrips_literal_percent_space_hash_and_unicode(self):
+        for filename in ("literal%20name.txt", "literal name.txt", "отчёт #1.txt", "report.txt#page=2"):
+            with self.subTest(filename=filename):
+                source = "C:/old/" + filename
+                candidate = candidate_with(message("m", f"[file](<{PureWindowsPath(source).as_uri()}>)"))
+                relative = "Projects/p/Results/one/" + filename
+                manifest = links.make_manifest(candidate, {relative: {"path": source}})
+                derived, ledger = links.derive(candidate, manifest, {"p": "C:/new project"})
+                text = derived["transfer"]["threads"][0]["turns"][0]["messages"][0]["text"]
+                occurrence = links.extract(text)[0]
+                self.assertEqual(links.source_key(ledger[0]["target_path"]), occurrence["key"])
+                self.assertTrue(occurrence["href"].startswith("<file:///C:/"))
+                if "%20" in filename:
+                    self.assertIn("literal%2520name.txt", occurrence["href"])
+                rebound = links.make_manifest(derived, {relative: {"path": ledger[0]["target_path"]}})
+                self.assertEqual(1, len(rebound["occurrences"]))
 
 
 if __name__ == "__main__":
