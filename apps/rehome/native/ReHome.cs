@@ -9,9 +9,9 @@ using System.Reflection;
 [assembly: AssemblyTitle("ReHome")]
 [assembly: AssemblyDescription("Codex backup and restore")]
 [assembly: AssemblyProduct("ReHome")]
-[assembly: AssemblyVersion("0.1.40.0")]
-[assembly: AssemblyFileVersion("0.1.40.1")]
-[assembly: AssemblyInformationalVersion("0.1.40-beta.1")]
+[assembly: AssemblyVersion("0.1.41.0")]
+[assembly: AssemblyFileVersion("0.1.41.1")]
+[assembly: AssemblyInformationalVersion("0.1.41-beta.1")]
 
 internal static class ReHome {
     private const string ProgramPin = "__PROGRAM_PIN__";
